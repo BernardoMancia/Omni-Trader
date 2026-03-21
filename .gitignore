@@ -1,0 +1,14 @@
+# Environments
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Omitir lixo e logs
+*.log
+.pytest_cache/
+.coverage
+htmlcov/

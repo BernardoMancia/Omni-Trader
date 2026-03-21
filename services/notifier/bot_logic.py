@@ -1,0 +1,140 @@
+import os
+import asyncio
+import logging
+from datetime import datetime, date
+import httpx
+import psycopg2
+import pytz
+from fastapi import FastAPI, Request
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("Notifier")
+
+TOKEN = os.environ["TELEGRAM_TOKEN"]
+CHAT_ID = os.environ["CHAT_ID"]
+TOPIC_EUA = int(os.environ.get("TOPIC_EUA", "0"))
+TOPIC_CRIPTO = int(os.environ.get("TOPIC_CRIPTO", "0"))
+TOPIC_LOGS = int(os.environ.get("TOPIC_LOGS", "0"))
+TG_URL = f"https://api.telegram.org/bot{TOKEN}"
+BR_TZ = pytz.timezone("America/Sao_Paulo")
+
+DB_PARAMS = {
+    "host": os.environ["DB_HOST"], "port": os.environ["DB_PORT"],
+    "dbname": os.environ["DB_NAME"], "user": os.environ["DB_USER"],
+    "password": os.environ["DB_PASSWORD"],
+}
+
+app = FastAPI(title="Omni-Notifier")
+scheduler = AsyncIOScheduler(timezone=BR_TZ)
+
+async def tg_send(text: str, thread_id: int = 0, markup: dict = None):
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
+    if thread_id > 0:
+        payload["message_thread_id"] = thread_id
+    if markup:
+        payload["reply_markup"] = markup
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(f"{TG_URL}/sendMessage", json=payload)
+            r.raise_for_status()
+    except Exception as exc:
+        logger.error(f"Telegram send error: {exc}")
+
+def get_exchange_rate() -> float:
+    try:
+        import httpx as _httpx
+        r = _httpx.get("https://economia.awesomeapi.com.br/json/last/USD-BRL", timeout=5)
+        return float(r.json()["USDBRL"]["bid"])
+    except Exception:
+        return 5.80
+
+def get_pnl_from_db(region: str) -> tuple[float, float]:
+    try:
+        conn = psycopg2.connect(**DB_PARAMS)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT SUM(CASE WHEN side='BUY' THEN -quantity*price ELSE quantity*price END) FROM trade_logs WHERE region=%s AND mode='REAL' AND time >= CURRENT_DATE",
+            (region,),
+        )
+        row = cursor.fetchone()
+        pnl = float(row[0] or 0)
+        cursor.execute("SELECT capital_ref FROM system_states WHERE region=%s ORDER BY time DESC LIMIT 1", (region,))
+        base_row = cursor.fetchone()
+        base = float(base_row[0]) if base_row else 10000.0
+        conn.close()
+        return pnl, base
+    except Exception:
+        return 0.0, 10000.0
+
+async def send_daily_report(region: str, thread_id: int):
+    pnl_usd, base = get_pnl_from_db(region)
+    rate = get_exchange_rate()
+    pnl_brl = pnl_usd * rate
+    pct = (pnl_usd / base * 100) if base else 0
+    dd_alert = ""
+    if pct <= -50:
+        dd_alert = "\n\n🚨 <b>LIMITE 50% ATINGIDO — SHADOW MODE ATIVO</b> 🚨"
+    trend = "📈" if pnl_usd >= 0 else "📉"
+    msg = (
+        f"📊 <b>Relatório Diário — {region}</b>\n"
+        f"📆 {date.today().strftime('%d/%m/%Y')}\n\n"
+        f"🔹 <b>Capital Base:</b> ${base:,.2f}\n"
+        f"💵 <b>PnL (USD):</b> <b>${pnl_usd:+,.2f}</b>\n"
+        f"🇧🇷 <b>PnL (BRL):</b> <b>R${pnl_brl:+,.2f}</b>\n"
+        f"{trend} <b>Variação:</b> {pct:+.2f}%"
+        f"{dd_alert}"
+    )
+    await tg_send(msg, thread_id)
+
+@app.on_event("startup")
+async def on_startup():
+    boot_time = datetime.now(BR_TZ).strftime("%d/%m/%Y %H:%M:%S")
+    asyncio.create_task(tg_send(
+        f"🔋 <b>Omni-Trader 9.1 — ONLINE</b>\n⏰ {boot_time}",
+        TOPIC_LOGS
+    ))
+    scheduler.add_job(send_daily_report, "cron", day_of_week="mon-fri", hour=10, minute=0, args=["EUA", TOPIC_EUA])
+    scheduler.add_job(send_daily_report, "cron", hour=10, minute=0, args=["Cripto", TOPIC_CRIPTO])
+    scheduler.start()
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    data = await request.json()
+    if "message" in data:
+        msg = data["message"]
+        text = msg.get("text", "")
+        thread_id = msg.get("message_thread_id", 0)
+        if text.startswith("/menu"):
+            await send_menu(thread_id)
+    elif "callback_query" in data:
+        cq = data["callback_query"]
+        thread_id = cq["message"].get("message_thread_id", 0)
+        await handle_callback(cq["data"], thread_id)
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{TG_URL}/answerCallbackQuery", json={"callback_query_id": cq["id"]})
+    return {"ok": True}
+
+async def send_menu(thread_id: int):
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "🛑 HALT", "callback_data": "force_red"}],
+            [{"text": "🔄 RESUME", "callback_data": "resume_bot"}],
+            [{"text": "💻 REBOOT", "callback_data": "reboot"}],
+        ]
+    }
+    await tg_send("⚙️ <b>Omni-Trader — Painel de Controle</b>", thread_id, keyboard)
+
+async def handle_callback(action: str, thread_id: int):
+    region = "EUA" if thread_id == TOPIC_EUA else "Cripto"
+    messages = {
+        "force_red": f"🚨 <b>HALT ATIVADO</b> — {region} entrou em Shadow Mode.",
+        "resume_bot": f"🔄 <b>RECALIBRANDO</b> — Novo capital base registrado para {region}.",
+        "reboot": f"💻 <b>REBOOT</b> — Reiniciando container {region}...",
+    }
+    if action in messages:
+        await tg_send(messages[action], thread_id)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("services.notifier.bot_logic:app", host="0.0.0.0", port=8000, reload=False)

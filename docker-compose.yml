@@ -1,0 +1,123 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg15
+    container_name: omni_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./services/shared/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ingester:
+    build:
+      context: ./services
+    container_name: omni_ingester
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SERVICE_NAME: data_ingester
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      BINANCE_API_KEY: ${BINANCE_API_KEY}
+      BINANCE_SECRET_KEY: ${BINANCE_SECRET_KEY}
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY}
+
+  brain:
+    build:
+      context: ./services
+    container_name: omni_brain
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SERVICE_NAME: ai_brain
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+
+  router:
+    build:
+      context: ./services
+    container_name: omni_router
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SERVICE_NAME: order_router
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      BINANCE_API_KEY: ${BINANCE_API_KEY}
+      BINANCE_SECRET_KEY: ${BINANCE_SECRET_KEY}
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL}
+      INITIAL_CAPITAL_US: ${INITIAL_CAPITAL_US}
+      INITIAL_CAPITAL_ASIA: ${INITIAL_CAPITAL_ASIA}
+
+  notifier:
+    build:
+      context: ./services
+    container_name: omni_notifier
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      SERVICE_NAME: notifier
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      CHAT_ID: ${CHAT_ID}
+      TOPIC_EUA: ${TOPIC_EUA}
+      TOPIC_CRIPTO: ${TOPIC_CRIPTO}
+      TOPIC_LOGS: ${TOPIC_LOGS}
+
+  watchdog:
+    build:
+      context: ./services
+    container_name: omni_watchdog
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      SERVICE_NAME: watchdog
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      CHAT_ID: ${CHAT_ID}
+      TOPIC_LOGS: ${TOPIC_LOGS}
+
+volumes:
+  db_data:
