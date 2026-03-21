@@ -20,7 +20,8 @@ services:
 
   ingester:
     build:
-      context: ./services
+      context: .
+      dockerfile: services/Dockerfile
     container_name: omni_ingester
     restart: always
     depends_on:
@@ -40,7 +41,8 @@ services:
 
   brain:
     build:
-      context: ./services
+      context: .
+      dockerfile: services/Dockerfile
     container_name: omni_brain
     restart: always
     depends_on:
@@ -56,7 +58,8 @@ services:
 
   router:
     build:
-      context: ./services
+      context: .
+      dockerfile: services/Dockerfile
     container_name: omni_router
     restart: always
     depends_on:
@@ -79,7 +82,8 @@ services:
 
   notifier:
     build:
-      context: ./services
+      context: .
+      dockerfile: services/Dockerfile
     container_name: omni_notifier
     restart: always
     depends_on:
@@ -102,7 +106,8 @@ services:
 
   watchdog:
     build:
-      context: ./services
+      context: .
+      dockerfile: services/Dockerfile
     container_name: omni_watchdog
     restart: always
     depends_on:

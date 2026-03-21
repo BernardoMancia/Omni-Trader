@@ -1,4 +1,4 @@
-# Omni-Trader: Multi-Region MFT Ecosystem
+# Omni-Trader 9.1
 
 [Português](#português) | [English](#english)
 
@@ -7,47 +7,41 @@
 ## Português
 
 ### Visão Geral
-Omni-Trader é um ecossistema de negociação de média frequência (MFT) distribuído globalmente, projetado para operar simultaneamente no mercado de ações dos EUA e nos mercados de criptomoedas asiáticos.
+Omni-Trader 9.1 é um ecossistema de trading quantitativo otimizado para VPS única via Docker Compose. O sistema opera simultaneamente em Ações (EUA) e Criptomoedas (ÁSIA).
 
-### Arquitetura Geográfica
-- **Omni-EUA (us-east-1)**: Focado em ações via API Alpaca. Latência < 5ms para Equinix NY4.
-- **Omni-Cripto (ap-northeast-1)**: Focado em ativos digitais via API Binance. Latência otimizada para o teatro asiático.
+### Arquitetura VPS
+- **Single Node**: Orquestração via Docker Compose.
+- **Banco de Dados**: TimescaleDB.
+- **NOC**: Bot de Telegram unificado com tópicos.
 
 ### Gestão de Risco
-O sistema implementa o **Critério de Kelly Fracionado** e uma máquina de estados de 4 níveis baseada em drawdown:
-- **Verde**: Operação normal.
-- **Amarelo**: Redução de risco.
-- **Laranja**: Pausa temporária (Halt).
-- **Vermelho**: Modo Sombra (Paper Trading).
+- **Hard Stop**: Trava automática em 50% de drawdown.
+- **Shadow Mode**: Operação simulada compulsória após o hard stop.
+- **Recalibragem**: Comando /resume via Telegram para resetar base de capital.
 
 ### Tecnologias
-- **Linguagem**: Python (AI Brain, Microserviços).
-- **IA**: Temporal Fusion Transformer (TFT) & Proximal Policy Optimization (PPO).
-- **Infraestrutura**: AWS ECS Fargate, ECR, VPC, Secrets Manager.
-- **Dados**: TimescaleDB (PostgreSQL).
-- **NOC**: Telegram Bots (FastAPI Webhooks).
+- **Core**: Python 3.11.
+- **IA**: PPO (Reinforcement Learning).
+- **Infra**: Docker, Docker Compose, PostgreSQL.
 
 ---
 
 ## English
 
 ### Overview
-Omni-Trader is a globally distributed Mid-Frequency Trading (MFT) ecosystem designed to operate simultaneously in the US stock market and Asian cryptocurrency markets.
+Omni-Trader 9.1 is a quantitative trading ecosystem optimized for single VPS deployment via Docker Compose. It operates simultaneously in Stocks (US) and Cryptocurrencies (ASIA).
 
-### Geographic Architecture
-- **Omni-USA (us-east-1)**: Focused on stocks via Alpaca API. Latency < 5ms to Equinix NY4.
-- **Omni-Crypto (ap-northeast-1)**: Focused on digital assets via Binance API. Latency optimized for the Asian theater.
+### VPS Architecture
+- **Single Node**: Orchestration via Docker Compose.
+- **Database**: TimescaleDB.
+- **NOC**: Unified Telegram Bot with forum topics.
 
 ### Risk Management
-The system implements the **Fractional Kelly Criterion** and a 4-level drawdown-based state machine:
-- **Green**: Normal operation.
-- **Yellow**: Risk reduction.
-- **Orange**: Temporary pause (Halt).
-- **Red**: Shadow Mode (Paper Trading).
+- **Hard Stop**: Automatic halt at 50% drawdown.
+- **Shadow Mode**: Compulsory simulated trading after hard stop.
+- **Recalibration**: /resume command via Telegram to reset capital base.
 
 ### Tech Stack
-- **Language**: Python (AI Brain, Microservices).
-- **AI**: Temporal Fusion Transformer (TFT) & Proximal Policy Optimization (PPO).
-- **Infrastructure**: AWS ECS Fargate, ECR, VPC, Secrets Manager.
-- **Data**: TimescaleDB (PostgreSQL).
-- **NOC**: Telegram Bots (FastAPI Webhooks).
+- **Core**: Python 3.11.
+- **AI**: PPO (Reinforcement Learning).
+- **Infra**: Docker, Docker Compose, PostgreSQL.
