@@ -109,23 +109,32 @@ async def on_startup():
     scheduler.add_job(send_daily_report, "cron", day_of_week="mon-fri", hour=10, minute=0, args=["EUA", TOPIC_EUA])
     scheduler.add_job(send_daily_report, "cron", hour=10, minute=0, args=["Cripto", TOPIC_CRIPTO])
     scheduler.start()
+    asyncio.create_task(telegram_polling())
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    data = await request.json()
-    if "message" in data:
-        msg = data["message"]
-        text = msg.get("text", "")
-        thread_id = msg.get("message_thread_id", 0)
-        if text.startswith("/menu"):
-            await send_menu(thread_id)
-    elif "callback_query" in data:
-        cq = data["callback_query"]
-        thread_id = cq["message"].get("message_thread_id", 0)
-        await handle_callback(cq["data"], thread_id)
-        async with httpx.AsyncClient() as client:
-            await client.post(f"{TG_URL}/answerCallbackQuery", json={"callback_query_id": cq["id"]})
-    return {"ok": True}
+async def telegram_polling():
+    last_update_id = 0
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(f"{TG_URL}/getUpdates", params={"offset": last_update_id, "timeout": 20})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for update in data.get("result", []):
+                        last_update_id = update["update_id"] + 1
+                        if "message" in update:
+                            msg = update["message"]
+                            text = msg.get("text", "")
+                            thread_id = msg.get("message_thread_id", 0)
+                            if text.startswith("/menu"):
+                                await send_menu(thread_id)
+                        elif "callback_query" in update:
+                            cq = update["callback_query"]
+                            thread_id = cq["message"].get("message_thread_id", 0)
+                            await handle_callback(cq["data"], thread_id)
+                            await client.post(f"{TG_URL}/answerCallbackQuery", json={"callback_query_id": cq["id"]})
+        except Exception as e:
+            logger.error(f"Polling error: {e}")
+        await asyncio.sleep(1)
 
 async def send_menu(thread_id: int):
     keyboard = {
