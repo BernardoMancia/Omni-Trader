@@ -28,6 +28,7 @@ services:
       TRADING_MODE: ${IB_TRADING_MODE}
       READ_ONLY_API: "no"
       VNC_SERVER_PASSWORD: ${IB_VNC_PASSWORD}
+      EXISTING_SESSION_DETECTED_ACTION: "primary"
     ports:
       - "4002:4002"
       - "5900:5900"
