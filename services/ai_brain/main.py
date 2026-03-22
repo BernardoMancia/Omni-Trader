@@ -65,7 +65,8 @@ class PPOAgent:
 async def main():
     agent = PPOAgent()
     logger.info(f"AI Brain online | device={agent.device}")
-    await asyncio.sleep(3600)
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     asyncio.run(main())

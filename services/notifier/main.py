@@ -1,11 +1,10 @@
 import os
 import asyncio
 import logging
-from datetime import datetime, date
+from datetime import date
 import httpx
 import psycopg2
 import pytz
-from fastapi import FastAPI, Request
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -25,8 +24,6 @@ DB_PARAMS = {
     "password": os.environ["DB_PASSWORD"],
 }
 
-app = FastAPI(title="Omni-Notifier")
-scheduler = AsyncIOScheduler(timezone=BR_TZ)
 
 async def tg_send(text: str, thread_id: int = 0, markup: dict = None):
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}
@@ -39,27 +36,25 @@ async def tg_send(text: str, thread_id: int = 0, markup: dict = None):
             r = await client.post(f"{TG_URL}/sendMessage", json=payload)
             if r.status_code == 200:
                 return
-            
             logger.error(f"Telegram API Error ({r.status_code}): {r.text}")
             if thread_id > 0:
-                logger.info("Retrying without thread_id (general chat)...")
                 payload.pop("message_thread_id", None)
                 r_retry = await client.post(f"{TG_URL}/sendMessage", json=payload)
                 if r_retry.status_code == 200:
-                    logger.info("Retry success: Sent to general chat.")
                     return
                 r_retry.raise_for_status()
             r.raise_for_status()
     except Exception as exc:
         logger.error(f"Telegram final error: {exc}")
 
+
 def get_exchange_rate() -> float:
     try:
-        import httpx as _httpx
-        r = _httpx.get("https://economia.awesomeapi.com.br/json/last/USD-BRL", timeout=5)
+        r = httpx.get("https://economia.awesomeapi.com.br/json/last/USD-BRL", timeout=5)
         return float(r.json()["USDBRL"]["bid"])
     except Exception:
         return 5.80
+
 
 def get_pnl_from_db(region: str) -> tuple[float, float]:
     try:
@@ -78,6 +73,7 @@ def get_pnl_from_db(region: str) -> tuple[float, float]:
         return pnl, base
     except Exception:
         return 0.0, 10000.0
+
 
 async def send_daily_report(region: str, thread_id: int):
     pnl_usd, base = get_pnl_from_db(region)
@@ -99,17 +95,28 @@ async def send_daily_report(region: str, thread_id: int):
     )
     await tg_send(msg, thread_id)
 
-@app.on_event("startup")
-async def on_startup():
-    boot_time = datetime.now(BR_TZ).strftime("%d/%m/%Y %H:%M:%S")
-    asyncio.create_task(tg_send(
-        f"🔋 <b>Omni-Trader 9.1 — ONLINE</b>\n⏰ {boot_time}",
-        TOPIC_LOGS
-    ))
-    scheduler.add_job(send_daily_report, "cron", day_of_week="mon-fri", hour=10, minute=0, args=["EUA", TOPIC_EUA])
-    scheduler.add_job(send_daily_report, "cron", hour=10, minute=0, args=["Cripto", TOPIC_CRIPTO])
-    scheduler.start()
-    asyncio.create_task(telegram_polling())
+
+async def send_menu(thread_id: int):
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "🛑 HALT", "callback_data": "force_red"}],
+            [{"text": "🔄 RESUME", "callback_data": "resume_bot"}],
+            [{"text": "💻 REBOOT", "callback_data": "reboot"}],
+        ]
+    }
+    await tg_send("⚙️ <b>Omni-Trader — Painel de Controle</b>", thread_id, keyboard)
+
+
+async def handle_callback(action: str, thread_id: int):
+    region = "EUA" if thread_id == TOPIC_EUA else "Cripto"
+    messages = {
+        "force_red": f"🚨 <b>HALT ATIVADO</b> — {region} entrou em Shadow Mode.",
+        "resume_bot": f"🔄 <b>RECALIBRANDO</b> — Novo capital base registrado para {region}.",
+        "reboot": f"💻 <b>REBOOT</b> — Reiniciando container {region}...",
+    }
+    if action in messages:
+        await tg_send(messages[action], thread_id)
+
 
 async def telegram_polling():
     last_update_id = 0
@@ -136,26 +143,20 @@ async def telegram_polling():
             logger.error(f"Polling error: {e}")
         await asyncio.sleep(1)
 
-async def send_menu(thread_id: int):
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": "🛑 HALT", "callback_data": "force_red"}],
-            [{"text": "🔄 RESUME", "callback_data": "resume_bot"}],
-            [{"text": "💻 REBOOT", "callback_data": "reboot"}],
-        ]
-    }
-    await tg_send("⚙️ <b>Omni-Trader — Painel de Controle</b>", thread_id, keyboard)
 
-async def handle_callback(action: str, thread_id: int):
-    region = "EUA" if thread_id == TOPIC_EUA else "Cripto"
-    messages = {
-        "force_red": f"🚨 <b>HALT ATIVADO</b> — {region} entrou em Shadow Mode.",
-        "resume_bot": f"🔄 <b>RECALIBRANDO</b> — Novo capital base registrado para {region}.",
-        "reboot": f"💻 <b>REBOOT</b> — Reiniciando container {region}...",
-    }
-    if action in messages:
-        await tg_send(messages[action], thread_id)
+async def main():
+    from datetime import datetime
+    boot_time = datetime.now(BR_TZ).strftime("%d/%m/%Y %H:%M:%S")
+
+    scheduler = AsyncIOScheduler(timezone=BR_TZ)
+    scheduler.add_job(send_daily_report, "cron", day_of_week="mon-fri", hour=10, minute=0, args=["EUA", TOPIC_EUA])
+    scheduler.add_job(send_daily_report, "cron", hour=10, minute=0, args=["Cripto", TOPIC_CRIPTO])
+    scheduler.start()
+
+    logger.info("Notifier online, starting Telegram polling...")
+    await tg_send(f"🔋 <b>Omni-Trader 9.1 — ONLINE</b>\n⏰ {boot_time}", TOPIC_LOGS)
+    await telegram_polling()
+
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("services.notifier.main:app", host="0.0.0.0", port=8000, reload=False)
+    asyncio.run(main())

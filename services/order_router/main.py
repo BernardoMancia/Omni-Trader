@@ -31,11 +31,14 @@ class IBKRRouter:
 
     async def connect(self):
         util.patchAsyncio()
-        try:
-            await self.ib.connectAsync(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID)
-            logger.info(f"IBKR connected to {IB_HOST}:{IB_PORT}")
-        except Exception as e:
-            logger.error(f"IBKR connect failed: {e}")
+        while True:
+            try:
+                await self.ib.connectAsync(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID)
+                logger.info(f"IBKR connected to {IB_HOST}:{IB_PORT}")
+                break
+            except Exception as e:
+                logger.error(f"IBKR connect failed: {e}. Retrying in 5s...")
+                await asyncio.sleep(5)
 
     async def execute_order(self, symbol: str, quantity: float, side: str) -> dict:
         if self.risk.state == MarketState.RED:

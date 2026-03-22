@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS system_states (
     time        TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
     region      TEXT              NOT NULL,
     state       TEXT              NOT NULL,
-    drawdown    DOUBLE PRECISION  NOT NULL
+    drawdown    DOUBLE PRECISION  NOT NULL,
+    capital_ref DOUBLE PRECISION  NOT NULL DEFAULT 10000
 );
 
 SELECT create_hypertable('system_states', 'time', if_not_exists => TRUE);

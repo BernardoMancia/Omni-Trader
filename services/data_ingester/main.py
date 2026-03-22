@@ -25,7 +25,15 @@ US_SYMBOLS = ["AAPL", "MSFT", "TSLA", "SPY", "QQQ"]
 CRYPTO_SYMBOLS = ["btcusdt", "ethusdt", "bnbusdt"]
 
 def get_db():
-    return psycopg2.connect(**DB_PARAMS)
+    while True:
+        try:
+            conn = psycopg2.connect(**DB_PARAMS)
+            logger.info("Database connected.")
+            return conn
+        except Exception as e:
+            logger.error(f"DB connect failed: {e}. Retrying in 5s...")
+            import time
+            time.sleep(5)
 
 async def run_binance_ingester():
     import json
@@ -51,12 +59,14 @@ async def run_ibkr_ingester():
     conn = get_db()
     cursor = conn.cursor()
 
-    try:
-        await ib.connectAsync(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID)
-        logger.info(f"IBKR connected to {IB_HOST}:{IB_PORT}")
-    except Exception as e:
-        logger.error(f"IBKR connect failed: {e}")
-        return
+    while True:
+        try:
+            await ib.connectAsync(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID)
+            logger.info(f"IBKR connected to {IB_HOST}:{IB_PORT}")
+            break
+        except Exception as e:
+            logger.error(f"IBKR connect failed: {e}. Retrying in 5s...")
+            await asyncio.sleep(5)
 
     contracts = [Stock(sym, "SMART", "USD") for sym in US_SYMBOLS]
     await ib.qualifyContractsAsync(*contracts)

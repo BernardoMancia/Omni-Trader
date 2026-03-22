@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+ENV PYTHONUNBUFFERED=1
 ENV SERVICE_NAME=notifier
 
 CMD ["sh", "-c", "python -m services.${SERVICE_NAME}.main"]
