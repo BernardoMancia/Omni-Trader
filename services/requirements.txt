@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 httpx==0.27.0
 websockets==13.1
 psycopg2-binary==2.9.9
@@ -8,4 +9,4 @@ pytz==2024.1
 numpy==1.26.4
 pandas==2.2.2
 ib_insync==0.9.86
-torch==2.4.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.4.0+cpu
