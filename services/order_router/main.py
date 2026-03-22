@@ -33,7 +33,9 @@ class IBKRRouter:
         util.patchAsyncio()
         while True:
             try:
-                await self.ib.connectAsync(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID)
+                import random
+                client_id = random.randint(10000, 19999)
+                await self.ib.connectAsync(IB_HOST, IB_PORT, clientId=client_id, timeout=30)
                 logger.info(f"IBKR connected to {IB_HOST}:{IB_PORT}")
                 break
             except Exception as e:
