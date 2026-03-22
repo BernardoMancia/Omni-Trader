@@ -41,8 +41,8 @@ services:
 
   ingester:
     build:
-      context: ./services
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/Dockerfile
     container_name: omni_ingester
     restart: always
     depends_on:
