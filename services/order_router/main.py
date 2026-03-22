@@ -8,6 +8,9 @@ import httpx
 import psycopg2
 from ib_insync import IB, Stock, MarketOrder, util
 from services.shared.risk import RiskManager, MarketState
+from fastapi import FastAPI
+from pydantic import BaseModel
+import uvicorn
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("SmartOrderRouter")
@@ -91,14 +94,39 @@ class BinanceRouter:
         logger.info(f"SHADOW BINANCE: {side} {quantity} {symbol}")
         return {"mode": "SHADOW", "symbol": symbol}
 
-async def main():
+app = FastAPI(title="Smart Order Router")
+
+class OrderRequest(BaseModel):
+    symbol: str
+    side: str
+    quantity: float
+    region: str
+
+ibkr_router_instance = None
+binance_router_instance = None
+
+@app.on_event("startup")
+async def startup_event():
+    global ibkr_router_instance, binance_router_instance
     risk_us = RiskManager(initial_capital=float(os.environ.get("INITIAL_CAPITAL_US", "10000")), region="US")
     risk_asia = RiskManager(initial_capital=float(os.environ.get("INITIAL_CAPITAL_ASIA", "10000")), region="ASIA")
-    ibkr_router = IBKRRouter(risk_manager=risk_us)
-    await ibkr_router.connect()
-    logger.info("SOR online: IBKR (US) + Binance (ASIA)")
-    while True:
-        await asyncio.sleep(3600)
+    
+    ibkr_router_instance = IBKRRouter(risk_manager=risk_us)
+    binance_router_instance = BinanceRouter(risk_manager=risk_asia)
+    
+    await ibkr_router_instance.connect()
+    logger.info("SOR online: IBKR (US) + Binance (ASIA) ready on port 8000")
+
+@app.post("/order")
+async def place_order(order: OrderRequest):
+    if order.region == "US":
+        return await ibkr_router_instance.execute_order(order.symbol, order.quantity, order.side)
+    elif order.region == "ASIA":
+        return await binance_router_instance.execute_order(order.symbol, order.quantity, order.side)
+    return {"error": "Invalid region"}
+
+def main():
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

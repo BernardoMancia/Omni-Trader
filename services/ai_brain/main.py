@@ -1,8 +1,19 @@
+import os
 import asyncio
 import logging
 import numpy as np
 import torch
 import torch.nn as nn
+import psycopg2
+import httpx
+
+DB_PARAMS = {
+    "host": os.environ["DB_HOST"], "port": os.environ["DB_PORT"],
+    "dbname": os.environ["DB_NAME"], "user": os.environ["DB_USER"],
+    "password": os.environ["DB_PASSWORD"],
+}
+
+ROUTER_URL = "http://router:8000/order"
 
 logger = logging.getLogger("AIBrain")
 
@@ -65,8 +76,42 @@ class PPOAgent:
 async def main():
     agent = PPOAgent()
     logger.info(f"AI Brain online | device={agent.device}")
+    
     while True:
-        await asyncio.sleep(3600)
+        try:
+            conn = psycopg2.connect(**DB_PARAMS)
+            cursor = conn.cursor()
+            cursor.execute("SELECT state FROM system_states ORDER BY timestamp DESC LIMIT 1")
+            state_row = cursor.fetchone()
+            global_risk = state_row[0] if state_row else "GREEN"
+            
+            cursor.execute("SELECT symbol, bid, ask, region FROM market_data ORDER BY timestamp DESC LIMIT 1")
+            price_row = cursor.fetchone()
+            conn.close()
+            
+            if price_row:
+                symbol, bid, ask, region = price_row
+                state_vector = np.random.rand(32)
+                
+                decision = agent.get_action(state_vector, global_risk)
+                if decision["action"] in ["BUY", "SELL"] and decision["confidence"] > 0.70:
+                    logger.info(f"AI Action: {decision['action']} {symbol} (Conf: {decision['confidence']})")
+                    async with httpx.AsyncClient() as client:
+                        payload = {
+                            "symbol": symbol,
+                            "side": decision["action"],
+                            "quantity": 1.0 if region == "US" else 0.01,
+                            "region": region
+                        }
+                        try:
+                            r = await client.post(ROUTER_URL, json=payload, timeout=5.0)
+                            logger.info(f"Router response: {r.status_code} {r.text}")
+                        except Exception as e:
+                            logger.error(f"Failed to send order to Router: {e}")
+        except Exception as e:
+            logger.error(f"AI Loop Error: {e}")
+        
+        await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())

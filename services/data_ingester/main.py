@@ -42,16 +42,23 @@ async def run_binance_ingester():
     uri = f"wss://stream.binance.com:9443/ws/{stream}"
     conn = get_db()
     cursor = conn.cursor()
-    logger.info(f"Binance connected: {CRYPTO_SYMBOLS}")
-    async with websockets.connect(uri) as ws:
-        async for raw in ws:
-            data = json.loads(raw)
-            symbol = data.get("s")
-            bid = float(data.get("b", 0))
-            ask = float(data.get("a", 0))
-            if symbol and bid and ask:
-                cursor.execute(INSERT_QUERY, (symbol, bid, ask, "ASIA"))
-                conn.commit()
+    
+    while True:
+        try:
+            logger.info(f"Binance connecting: {CRYPTO_SYMBOLS}")
+            async with websockets.connect(uri) as ws:
+                logger.info("Binance connected and listening.")
+                async for raw in ws:
+                    data = json.loads(raw)
+                    symbol = data.get("s")
+                    bid = float(data.get("b", 0))
+                    ask = float(data.get("a", 0))
+                    if symbol and bid and ask:
+                        cursor.execute(INSERT_QUERY, (symbol, bid, ask, "ASIA"))
+                        conn.commit()
+        except Exception as e:
+            logger.warning(f"Binance WS dropped ({e}). Reconnecting in 5s...")
+            await asyncio.sleep(5)
 
 async def run_ibkr_ingester():
     util.patchAsyncio()
