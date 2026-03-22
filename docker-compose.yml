@@ -31,7 +31,7 @@ services:
       EXISTING_SESSION_DETECTED_ACTION: "primary"
       ACCEPT_INCOMING_CONNECTION: "accept"
       BYPASS_WARNING: "yes"
-      TWS_SETTINGS_PATH: ""
+      IBC_OverrideTwsApiPort: "4004"
     ports:
       - "4002:4002"
       - "5900:5900"
