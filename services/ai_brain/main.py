@@ -81,11 +81,11 @@ async def main():
         try:
             conn = psycopg2.connect(**DB_PARAMS)
             cursor = conn.cursor()
-            cursor.execute("SELECT state FROM system_states ORDER BY timestamp DESC LIMIT 1")
+            cursor.execute("SELECT state FROM system_states ORDER BY time DESC LIMIT 1")
             state_row = cursor.fetchone()
             global_risk = state_row[0] if state_row else "GREEN"
             
-            cursor.execute("SELECT symbol, bid, ask, region FROM market_data ORDER BY timestamp DESC LIMIT 1")
+            cursor.execute("SELECT symbol, bid, ask, region FROM market_data ORDER BY time DESC LIMIT 1")
             price_row = cursor.fetchone()
             conn.close()
             
