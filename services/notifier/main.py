@@ -37,15 +37,21 @@ async def tg_send(text: str, thread_id: int = 0, markup: dict = None):
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.post(f"{TG_URL}/sendMessage", json=payload)
-            if r.status_code != 200:
-                logger.error(f"Telegram API Error ({r.status_code}): {r.text}")
-                if thread_id > 0:
-                    logger.info("Retrying without thread_id (general chat)...")
-                    payload.pop("message_thread_id")
-                    await client.post(f"{TG_URL}/sendMessage", json=payload)
+            if r.status_code == 200:
+                return
+            
+            logger.error(f"Telegram API Error ({r.status_code}): {r.text}")
+            if thread_id > 0:
+                logger.info("Retrying without thread_id (general chat)...")
+                payload.pop("message_thread_id", None)
+                r_retry = await client.post(f"{TG_URL}/sendMessage", json=payload)
+                if r_retry.status_code == 200:
+                    logger.info("Retry success: Sent to general chat.")
+                    return
+                r_retry.raise_for_status()
             r.raise_for_status()
     except Exception as exc:
-        logger.error(f"Telegram connection error: {exc}")
+        logger.error(f"Telegram final error: {exc}")
 
 def get_exchange_rate() -> float:
     try:
