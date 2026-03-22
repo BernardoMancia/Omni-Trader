@@ -32,15 +32,17 @@ services:
       ACCEPT_INCOMING_CONNECTION: "accept"
       BYPASS_WARNING: "yes"
       IBC_OverrideTwsApiPort: "4004"
+      IBC_TrustedIPs: "172.0.0.0/8,127.0.0.1"
+      IBC_ApiOnly: "true"
     ports:
-      - "4002:4002"
+      - "4004:4004"
       - "5900:5900"
 
 
   ingester:
     build:
-      context: .
-      dockerfile: services/Dockerfile
+      context: ./services
+      dockerfile: Dockerfile
     container_name: omni_ingester
     restart: always
     depends_on:
@@ -56,7 +58,7 @@ services:
       BINANCE_API_KEY: ${BINANCE_API_KEY}
       BINANCE_SECRET_KEY: ${BINANCE_SECRET_KEY}
       IB_HOST: ibgateway
-      IB_PORT: "4002"
+      IB_PORT: "4004"
       IB_CLIENT_ID: "10"
 
   brain:
@@ -95,7 +97,7 @@ services:
       BINANCE_API_KEY: ${BINANCE_API_KEY}
       BINANCE_SECRET_KEY: ${BINANCE_SECRET_KEY}
       IB_HOST: ibgateway
-      IB_PORT: "4002"
+      IB_PORT: "4004"
       IB_CLIENT_ID: "1"
       INITIAL_CAPITAL_US: ${INITIAL_CAPITAL_US}
       INITIAL_CAPITAL_ASIA: ${INITIAL_CAPITAL_ASIA}
