@@ -1,9 +1,8 @@
 import os
-import json
 import asyncio
 import logging
 import psycopg2
-import websockets
+from ib_insync import IB, Stock, util
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("DataIngester")
@@ -18,16 +17,24 @@ DB_PARAMS = {
 
 INSERT_QUERY = "INSERT INTO market_data (symbol, bid, ask, region) VALUES (%s, %s, %s, %s)"
 
+IB_HOST = os.environ.get("IB_HOST", "ibgateway")
+IB_PORT = int(os.environ.get("IB_PORT", "4002"))
+IB_CLIENT_ID = int(os.environ.get("IB_CLIENT_ID", "10"))
+
+US_SYMBOLS = ["AAPL", "MSFT", "TSLA", "SPY", "QQQ"]
+CRYPTO_SYMBOLS = ["btcusdt", "ethusdt", "bnbusdt"]
+
 def get_db():
     return psycopg2.connect(**DB_PARAMS)
 
 async def run_binance_ingester():
-    symbols = ["btcusdt", "ethusdt", "bnbusdt"]
-    stream = "/".join([f"{s}@bookTicker" for s in symbols])
+    import json
+    import websockets
+    stream = "/".join([f"{s}@bookTicker" for s in CRYPTO_SYMBOLS])
     uri = f"wss://stream.binance.com:9443/ws/{stream}"
     conn = get_db()
     cursor = conn.cursor()
-    logger.info(f"Binance ingester connected: {symbols}")
+    logger.info(f"Binance connected: {CRYPTO_SYMBOLS}")
     async with websockets.connect(uri) as ws:
         async for raw in ws:
             data = json.loads(raw)
@@ -38,27 +45,39 @@ async def run_binance_ingester():
                 cursor.execute(INSERT_QUERY, (symbol, bid, ask, "ASIA"))
                 conn.commit()
 
-async def run_alpaca_ingester():
-    uri = "wss://stream.data.alpaca.markets/v2/sip"
-    api_key = os.environ["ALPACA_API_KEY"]
-    secret_key = os.environ["ALPACA_SECRET_KEY"]
+async def run_ibkr_ingester():
+    util.patchAsyncio()
+    ib = IB()
     conn = get_db()
     cursor = conn.cursor()
-    logger.info("Alpaca ingester connecting...")
-    async with websockets.connect(uri) as ws:
-        await ws.send(json.dumps({"action": "auth", "key": api_key, "secret": secret_key}))
-        await ws.send(json.dumps({"action": "subscribe", "quotes": ["SPY", "QQQ", "AAPL", "TSLA"]}))
-        async for raw in ws:
-            messages = json.loads(raw)
-            for msg in messages:
-                if msg.get("T") == "q":
-                    cursor.execute(INSERT_QUERY, (msg["S"], msg["bp"], msg["ap"], "US"))
-                    conn.commit()
+
+    try:
+        await ib.connectAsync(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID)
+        logger.info(f"IBKR connected to {IB_HOST}:{IB_PORT}")
+    except Exception as e:
+        logger.error(f"IBKR connect failed: {e}")
+        return
+
+    contracts = [Stock(sym, "SMART", "USD") for sym in US_SYMBOLS]
+    await ib.qualifyContractsAsync(*contracts)
+
+    def on_tick(ticker):
+        if ticker.bid and ticker.ask:
+            cursor.execute(INSERT_QUERY, (ticker.contract.symbol, ticker.bid, ticker.ask, "US"))
+            conn.commit()
+
+    for contract in contracts:
+        ib.reqMktData(contract, "", False, False)
+    
+    ib.pendingTickersEvent += lambda tickers: [on_tick(t) for t in tickers]
+
+    while True:
+        await asyncio.sleep(1)
 
 async def main():
     await asyncio.gather(
         run_binance_ingester(),
-        run_alpaca_ingester(),
+        run_ibkr_ingester(),
     )
 
 if __name__ == "__main__":

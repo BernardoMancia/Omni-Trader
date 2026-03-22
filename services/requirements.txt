@@ -10,3 +10,4 @@ pytz==2024.1
 torch==2.4.0
 numpy==1.26.4
 pandas==2.2.2
+ib_insync==0.9.86
