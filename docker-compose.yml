@@ -29,9 +29,16 @@ services:
       READ_ONLY_API: "no"
       VNC_SERVER_PASSWORD: ${IB_VNC_PASSWORD}
       EXISTING_SESSION_DETECTED_ACTION: "primary"
+      ACCEPT_INCOMING_CONNECTION: "accept"
+      BYPASS_WARNING: "yes"
+      TWS_SETTINGS_PATH: ""
     ports:
       - "4002:4002"
       - "5900:5900"
+    volumes:
+      - ./ibgateway/jts.ini:/home/ibgateway/Jts/jts.ini
+
+
 
 
   ingester:
