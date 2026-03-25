@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-APP_DIR="/home/adm_luke/prod/docker"
+APP_DIR="/home/adm_luke/prod/docker/Omni-Trader"
 LOG_DIR="/var/log/omni"
 PYTHON="python3"
 PM2_STARTUP_CMD=""
