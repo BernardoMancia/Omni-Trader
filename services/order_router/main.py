@@ -1,24 +1,15 @@
 import os
 import asyncio
 import logging
-import hmac
-import hashlib
-import time
-import httpx
 import psycopg2
-from ib_insync import IB, Stock, MarketOrder, util
-from services.shared.risk import RiskManager, MarketState
+import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
-import uvicorn
+from services.shared.risk import RiskManager, MarketState
+from services.order_router.ibkr import IBKRRouter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("SmartOrderRouter")
-
-IB_HOST = os.environ.get("IB_HOST", "ibgateway")
-IB_PORT = int(os.environ.get("IB_PORT", "4002"))
-IB_CLIENT_ID = int(os.environ.get("IB_CLIENT_ID", "1"))
-BINANCE_BASE = "https://api.binance.com"
 
 DB_PARAMS = {
     "host": os.environ["DB_HOST"], "port": os.environ["DB_PORT"],
@@ -26,107 +17,101 @@ DB_PARAMS = {
     "password": os.environ["DB_PASSWORD"],
 }
 
-class IBKRRouter:
-    def __init__(self, risk_manager: RiskManager):
-        self.risk = risk_manager
-        self.ib = IB()
-        self.db = psycopg2.connect(**DB_PARAMS)
+app = FastAPI(title="Omni-Trader Smart Order Router")
+ibkr_router: IBKRRouter | None = None
+risk_us: RiskManager | None = None
 
-    async def connect(self):
-        util.patchAsyncio()
-        while True:
-            try:
-                import random
-                client_id = random.randint(10000, 19999)
-                await self.ib.connectAsync(IB_HOST, IB_PORT, clientId=client_id, timeout=30)
-                logger.info(f"IBKR connected to {IB_HOST}:{IB_PORT}")
-                break
-            except Exception as e:
-                logger.error(f"IBKR connect failed: {e}. Retrying in 5s...")
-                await asyncio.sleep(5)
-
-    async def execute_order(self, symbol: str, quantity: float, side: str) -> dict:
-        if self.risk.state == MarketState.RED:
-            return await self._shadow_trade(symbol, quantity, side, "US")
-        contract = Stock(symbol, "SMART", "USD")
-        await self.ib.qualifyContractsAsync(contract)
-        order = MarketOrder(side.upper(), quantity)
-        trade = self.ib.placeOrder(contract, order)
-        logger.info(f"IBKR Order: {side} {quantity} {symbol}")
-        return {"status": "submitted", "orderId": trade.order.orderId}
-
-    async def _shadow_trade(self, symbol: str, quantity: float, side: str, region: str) -> dict:
-        cursor = self.db.cursor()
-        cursor.execute(
-            "INSERT INTO trade_logs (symbol, side, quantity, mode, region) VALUES (%s, %s, %s, %s, %s)",
-            (symbol, side, quantity, "SHADOW", region),
-        )
-        self.db.commit()
-        logger.info(f"SHADOW: {side} {quantity} {symbol}")
-        return {"mode": "SHADOW", "symbol": symbol}
-
-class BinanceRouter:
-    def __init__(self, risk_manager: RiskManager):
-        self.risk = risk_manager
-        self.api_key = os.environ["BINANCE_API_KEY"]
-        self.api_secret = os.environ["BINANCE_SECRET_KEY"]
-        self.db = psycopg2.connect(**DB_PARAMS)
-
-    async def execute_order(self, symbol: str, quantity: float, side: str) -> dict:
-        if self.risk.state == MarketState.RED:
-            return await self._shadow_trade(symbol, quantity, side, "ASIA")
-        ts = int(time.time() * 1000)
-        params = f"symbol={symbol}&side={side}&type=MARKET&quantity={quantity}&timestamp={ts}"
-        sig = hmac.new(self.api_secret.encode(), params.encode(), hashlib.sha256).hexdigest()
-        url = f"{BINANCE_BASE}/api/v3/order?{params}&signature={sig}"
-        async with httpx.AsyncClient() as client:
-            r = await client.post(url, headers={"X-MBX-APIKEY": self.api_key})
-            r.raise_for_status()
-            return r.json()
-
-    async def _shadow_trade(self, symbol: str, quantity: float, side: str, region: str) -> dict:
-        cursor = self.db.cursor()
-        cursor.execute(
-            "INSERT INTO trade_logs (symbol, side, quantity, mode, region) VALUES (%s, %s, %s, %s, %s)",
-            (symbol, side, quantity, "SHADOW", region),
-        )
-        self.db.commit()
-        logger.info(f"SHADOW BINANCE: {side} {quantity} {symbol}")
-        return {"mode": "SHADOW", "symbol": symbol}
-
-app = FastAPI(title="Smart Order Router")
 
 class OrderRequest(BaseModel):
     symbol: str
     side: str
-    quantity: float
-    region: str
+    quantity: float = 1.0
+    region: str = "US"
+    use_fractional: bool = False
+    equity: float | None = None
 
-ibkr_router_instance = None
-binance_router_instance = None
+
+def _log_trade(symbol: str, side: str, quantity: float, mode: str, region: str, price: float = 0.0):
+    try:
+        conn = psycopg2.connect(**DB_PARAMS)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO trade_logs (symbol, side, quantity, price, mode, region) VALUES (%s, %s, %s, %s, %s, %s)",
+            (symbol, side, quantity, price, mode, region),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Erro ao logar trade: {e}")
+
 
 @app.on_event("startup")
 async def startup_event():
-    global ibkr_router_instance, binance_router_instance
-    risk_us = RiskManager(initial_capital=float(os.environ.get("INITIAL_CAPITAL_US", "10000")), region="US")
-    risk_asia = RiskManager(initial_capital=float(os.environ.get("INITIAL_CAPITAL_ASIA", "10000")), region="ASIA")
-    
-    ibkr_router_instance = IBKRRouter(risk_manager=risk_us)
-    binance_router_instance = BinanceRouter(risk_manager=risk_asia)
-    
-    await ibkr_router_instance.connect()
-    logger.info("SOR online: IBKR (US) + Binance (ASIA) ready on port 8000")
+    global ibkr_router, risk_us
+    initial_capital = float(os.environ.get("INITIAL_CAPITAL_US", "10000"))
+    risk_pct = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
+    use_fractional = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
+
+    risk_us = RiskManager(
+        initial_capital=initial_capital,
+        region="US",
+        risk_pct=risk_pct,
+        use_fractional=use_fractional,
+    )
+    ibkr_router = IBKRRouter(risk_manager=risk_us)
+    await ibkr_router.connect()
+    logger.info(f"SOR online | IBKR pronto | capital=${initial_capital:,.2f} | risco={risk_pct*100:.1f}%")
+
 
 @app.post("/order")
 async def place_order(order: OrderRequest):
     if order.region == "US":
-        return await ibkr_router_instance.execute_order(order.symbol, order.quantity, order.side)
-    elif order.region == "ASIA":
-        return await binance_router_instance.execute_order(order.symbol, order.quantity, order.side)
-    return {"error": "Invalid region"}
+        result = await ibkr_router.execute_order(
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            use_fractional=order.use_fractional,
+            equity=order.equity,
+        )
+        if result.get("status") == "submitted":
+            _log_trade(order.symbol, order.side, order.quantity, "REAL", "US")
+        elif result.get("mode") == "SHADOW":
+            _log_trade(order.symbol, order.side, order.quantity, "SHADOW", "US")
+        return result
+    return {"error": f"Região não suportada: {order.region}"}
+
+
+@app.get("/health")
+async def health():
+    state = risk_us.state.name if risk_us else "UNKNOWN"
+    balance = risk_us.current_balance if risk_us else 0
+    dd = risk_us.max_drawdown if risk_us else 0
+    return {
+        "status": "ok",
+        "risk_state": state,
+        "balance": balance,
+        "max_drawdown_pct": round(dd, 2),
+    }
+
+
+@app.get("/risk")
+async def risk_snapshot():
+    if not risk_us:
+        return {"error": "não iniciado"}
+    return {
+        "state": risk_us.state.name,
+        "current_balance": risk_us.current_balance,
+        "capital_ref": risk_us.capital_ref,
+        "drawdown_pct": round(risk_us.get_drawdown(), 2),
+        "max_drawdown_pct": round(risk_us.max_drawdown, 2),
+        "risk_pct": risk_us.risk_pct,
+        "use_fractional": risk_us.use_fractional,
+    }
+
 
 def main():
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=28000)
+
 
 if __name__ == "__main__":
     main()

@@ -6,16 +6,25 @@ import torch
 import torch.nn as nn
 import psycopg2
 import httpx
+from services.ai_brain.forest import ForestEngine
+from services.ai_brain.sentiment import SentimentEngine
+from services.shared.risk import MarketState
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("AIBrain")
 
 DB_PARAMS = {
     "host": os.environ["DB_HOST"], "port": os.environ["DB_PORT"],
     "dbname": os.environ["DB_NAME"], "user": os.environ["DB_USER"],
     "password": os.environ["DB_PASSWORD"],
 }
+ROUTER_URL = os.environ.get("ROUTER_URL", "http://router:28000/order")
+SENTIMENT_QUERY = os.environ.get("SENTIMENT_QUERY", "US stock market economy recession")
+IBKR_SYMBOLS = os.environ.get("IBKR_SYMBOLS", "AAPL,MSFT,TSLA,SPY,QQQ,VOO").split(",")
+RF_TRAIN_YEARS = int(os.environ.get("RF_TRAIN_YEARS", "5"))
+LOOP_INTERVAL = int(os.environ.get("BRAIN_LOOP_INTERVAL", "15"))
+PPO_CONFIDENCE_MIN = float(os.environ.get("PPO_CONFIDENCE_MIN", "0.70"))
 
-ROUTER_URL = "http://router:8000/order"
-
-logger = logging.getLogger("AIBrain")
 
 class PPOActorCritic(nn.Module):
     def __init__(self, state_dim: int, action_dim: int):
@@ -31,87 +40,144 @@ class PPOActorCritic(nn.Module):
         features = self.shared(x)
         return self.actor(features), self.critic(features)
 
+
 class PPOAgent:
     ACTIONS = ["HOLD", "BUY", "SELL"]
 
     def __init__(self, state_dim: int = 32, action_dim: int = 3):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cpu")
         self.model = PPOActorCritic(state_dim, action_dim).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=3e-4)
 
-    def get_action(self, state_vector: np.ndarray, risk_state: str) -> dict:
-        if risk_state == "RED":
-            return {"action": "HOLD", "action_idx": 0, "confidence": 1.0}
+    def get_action(self, state_vector: np.ndarray) -> dict:
         state_tensor = torch.FloatTensor(state_vector).unsqueeze(0).to(self.device)
         with torch.no_grad():
             probs, _ = self.model(state_tensor)
-        action_idx = torch.argmax(probs).item()
-        confidence = probs[0][action_idx].item()
-        return {"action": self.ACTIONS[action_idx], "action_idx": action_idx, "confidence": round(confidence, 4)}
+        action_idx = int(torch.argmax(probs).item())
+        confidence = float(probs[0][action_idx].item())
+        return {"action": self.ACTIONS[action_idx], "confidence": round(confidence, 4)}
 
-    def calculate_reward(self, pnl: float, slippage: float, fees: float) -> float:
-        return pnl - (fees + 0.1 * np.sqrt(max(slippage, 0)))
 
-    def update(self, states, actions, rewards, old_log_probs, clip_eps: float = 0.2):
-        states_t = torch.FloatTensor(states).to(self.device)
-        actions_t = torch.LongTensor(actions).to(self.device)
-        rewards_t = torch.FloatTensor(rewards).to(self.device)
-        old_log_probs_t = torch.FloatTensor(old_log_probs).to(self.device)
+def _fetch_market_row(cursor) -> tuple | None:
+    cursor.execute(
+        "SELECT symbol, bid, ask FROM market_data WHERE region='US' ORDER BY time DESC LIMIT 1"
+    )
+    return cursor.fetchone()
 
-        probs, values = self.model(states_t)
-        dist = torch.distributions.Categorical(probs)
-        new_log_probs = dist.log_prob(actions_t)
-        entropy = dist.entropy().mean()
-        ratio = (new_log_probs - old_log_probs_t).exp()
-        adv = (rewards_t - values.squeeze().detach())
-        surr1 = ratio * adv
-        surr2 = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * adv
-        loss = -torch.min(surr1, surr2).mean() - 0.01 * entropy
 
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-        return loss.item()
+def _log_sentiment_to_db(cursor, conn, symbol: str, score: float):
+    try:
+        cursor.execute(
+            "INSERT INTO sentiment_scores (symbol, score) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+            (symbol, score),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+
+def _update_system_state(cursor, conn, state_name: str, drawdown: float, capital: float):
+    try:
+        cursor.execute(
+            "INSERT INTO system_states (region, state, drawdown, capital_ref) VALUES (%s, %s, %s, %s)",
+            ("US", state_name, drawdown, capital),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+
+async def _send_order(symbol: str, side: str, quantity: float, use_fractional: bool, equity: float):
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        payload = {
+            "symbol": symbol,
+            "side": side,
+            "quantity": quantity,
+            "region": "US",
+            "use_fractional": use_fractional,
+            "equity": equity,
+        }
+        try:
+            r = await client.post(ROUTER_URL, json=payload)
+            logger.info(f"Router response [{side} {symbol}]: {r.status_code} {r.text[:120]}")
+        except Exception as e:
+            logger.error(f"Falha ao enviar ordem ao router: {e}")
+
 
 async def main():
-    agent = PPOAgent()
-    logger.info(f"AI Brain online | device={agent.device}")
-    
+    ppo = PPOAgent()
+    forest = ForestEngine()
+    sentiment = SentimentEngine()
+    initial_capital = float(os.environ.get("INITIAL_CAPITAL_US", "10000"))
+
+    if not forest.is_ready():
+        logger.info("Treinando RandomForest com histórico de 5 anos...")
+        forest.train(symbols=IBKR_SYMBOLS, years=RF_TRAIN_YEARS)
+    else:
+        logger.info("RandomForest carregado do cache, pronto para operar.")
+
+    logger.info(f"AI Brain IBKR online | capital_base=${initial_capital:,.2f}")
+
     while True:
         try:
             conn = psycopg2.connect(**DB_PARAMS)
             cursor = conn.cursor()
-            cursor.execute("SELECT state FROM system_states ORDER BY time DESC LIMIT 1")
-            state_row = cursor.fetchone()
-            global_risk = state_row[0] if state_row else "GREEN"
-            
-            cursor.execute("SELECT symbol, bid, ask, region FROM market_data ORDER BY time DESC LIMIT 1")
-            price_row = cursor.fetchone()
-            conn.close()
-            
+
+            sentiment_score = sentiment.analyze(SENTIMENT_QUERY)
+            is_defensive = sentiment.is_defensive(sentiment_score)
+
+            price_row = _fetch_market_row(cursor)
+
             if price_row:
-                symbol, bid, ask, region = price_row
-                state_vector = np.random.rand(32)
-                
-                decision = agent.get_action(state_vector, global_risk)
-                if decision["action"] in ["BUY", "SELL"] and decision["confidence"] > 0.70:
-                    logger.info(f"AI Action: {decision['action']} {symbol} (Conf: {decision['confidence']})")
-                    async with httpx.AsyncClient() as client:
-                        payload = {
-                            "symbol": symbol,
-                            "side": decision["action"],
-                            "quantity": 1.0 if region == "US" else 0.01,
-                            "region": region
-                        }
-                        try:
-                            r = await client.post(ROUTER_URL, json=payload, timeout=5.0)
-                            logger.info(f"Router response: {r.status_code} {r.text}")
-                        except Exception as e:
-                            logger.error(f"Failed to send order to Router: {e}")
+                symbol, bid, ask = price_row
+                mid_price = (bid + ask) / 2.0
+
+                state_vector = np.random.rand(32).astype(np.float32)
+                ppo_decision = ppo.get_action(state_vector)
+
+                rf_9_features = state_vector[:9]
+                rf_decision = forest.predict(rf_9_features)
+
+                ppo_action = ppo_decision["action"]
+                rf_signal = rf_decision["signal"]
+                rf_conf = rf_decision["confidence"]
+                ppo_conf = ppo_decision["confidence"]
+
+                if is_defensive:
+                    if ppo_action == "BUY" or rf_signal == "BUY":
+                        logger.info(f"Modo DEFENSIVO (sent={sentiment_score:.2f}): BUY bloqueado → HOLD")
+                        _update_system_state(cursor, conn, MarketState.DEFENSIVE.name, 0.0, initial_capital)
+                        conn.close()
+                        await asyncio.sleep(LOOP_INTERVAL)
+                        continue
+
+                consensus = ppo_action == rf_signal
+                strong_signal = (
+                    consensus
+                    and ppo_conf >= PPO_CONFIDENCE_MIN
+                    and rf_conf >= 0.55
+                    and ppo_action in ("BUY", "SELL")
+                )
+
+                if strong_signal:
+                    logger.info(
+                        f"SINAL [{ppo_action}] {symbol} | PPO={ppo_conf:.2f} RF={rf_conf:.2f} Sent={sentiment_score:.2f}"
+                    )
+                    use_fractional = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
+                    risk_pct = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
+                    equity = initial_capital
+                    quantity = (equity * risk_pct) / mid_price if use_fractional else max(1, int((equity * risk_pct) / mid_price))
+                    await _send_order(symbol, ppo_action, quantity, use_fractional, equity)
+
+                _log_sentiment_to_db(cursor, conn, symbol, sentiment_score)
+
+            conn.close()
+
         except Exception as e:
-            logger.error(f"AI Loop Error: {e}")
-        
-        await asyncio.sleep(10)
+            logger.error(f"AI Brain loop error: {e}")
+
+        await asyncio.sleep(LOOP_INTERVAL)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
