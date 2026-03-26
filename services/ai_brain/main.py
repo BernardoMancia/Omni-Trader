@@ -2,6 +2,8 @@ import os
 import asyncio
 import logging
 import numpy as np
+import pandas as pd
+import yfinance as yf
 import torch
 import torch.nn as nn
 import psycopg2
@@ -66,7 +68,6 @@ def _fetch_market_row(cursor) -> tuple | None:
 
 
 def _fetch_history_from_db(cursor, symbols: list[str]) -> dict[str, pd.DataFrame]:
-    import pandas as pd
     history_map = {}
     for sym in symbols:
         try:
