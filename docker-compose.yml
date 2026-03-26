@@ -32,7 +32,8 @@ services:
       ACCEPT_INCOMING_CONNECTION: "accept"
       BYPASS_WARNING: "yes"
       IBC_TrustedIPs: "0.0.0.0/0"
-      IBC_ApiOnly: "false"
+      IBC_ApiOnly: "true"
+      TWS_ACCEPT_INCOMING_CONNECTION: "true"
     ports:
       - "24004:4001"
       - "25900:5900"
