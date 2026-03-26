@@ -65,6 +65,27 @@ def _fetch_market_row(cursor) -> tuple | None:
     return cursor.fetchone()
 
 
+def _fetch_history_from_db(cursor, symbols: list[str]) -> dict[str, pd.DataFrame]:
+    import pandas as pd
+    history_map = {}
+    for sym in symbols:
+        try:
+            cursor.execute(
+                "SELECT date as \"Date\", open as \"Open\", high as \"High\", low as \"Low\", close as \"Close\", volume as \"Volume\" "
+                "FROM price_history WHERE symbol=%s ORDER BY date ASC",
+                (sym,)
+            )
+            rows = cursor.fetchall()
+            if rows:
+                cols = ["Date", "Open", "High", "Low", "Close", "Volume"]
+                df = pd.DataFrame(rows, columns=cols)
+                df.set_index("Date", inplace=True)
+                history_map[sym] = df
+        except Exception as e:
+            logger.error(f"Erro ao buscar histórico de {sym} no DB: {e}")
+    return history_map
+
+
 def _log_sentiment_to_db(cursor, conn, symbol: str, score: float):
     try:
         cursor.execute(
@@ -111,8 +132,19 @@ async def main():
     initial_capital = float(os.environ.get("INITIAL_CAPITAL_US", "10000"))
 
     if not forest.is_ready():
-        logger.info("Treinando RandomForest com histórico de 5 anos...")
-        forest.train(symbols=IBKR_SYMBOLS, years=RF_TRAIN_YEARS)
+        logger.info("Tentando carregar histórico do banco de dados para treino...")
+        try:
+            conn = psycopg2.connect(**DB_PARAMS)
+            cursor = conn.cursor()
+            db_data = _fetch_history_from_db(cursor, IBKR_SYMBOLS)
+            conn.close()
+            
+            logger.info(f"Iniciando treino com {len(db_data)} símbolos vindos do DB.")
+            forest.train(symbols=IBKR_SYMBOLS, years=RF_TRAIN_YEARS, data_map=db_data)
+        except Exception as e:
+            logger.error(f"Falha ao carregar dados do DB para treino: {e}")
+            logger.info("Mantendo tentativa via yfinance como fallback...")
+            forest.train(symbols=IBKR_SYMBOLS, years=RF_TRAIN_YEARS)
     else:
         logger.info("RandomForest carregado do cache, pronto para operar.")
 

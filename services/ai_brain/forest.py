@@ -62,21 +62,31 @@ class ForestEngine:
             self.scaler = joblib.load(SCALER_PATH)
             logger.info("RandomForest carregado do disco.")
 
-    def train(self, symbols: list[str], years: int = 5) -> bool:
+    def train(self, symbols: list[str], years: int = 5, data_map: dict[str, pd.DataFrame] | None = None) -> bool:
         if not _DEPS_OK:
             return False
+        
         logger.info(f"Treinando RandomForest com {years} anos de histórico: {symbols}")
         frames = []
+
         for sym in symbols:
-            try:
-                df = yf.download(sym, period=f"{years}y", interval="1d", progress=False, auto_adjust=True)
-                if len(df) < 200:
-                    logger.warning(f"Histórico insuficiente para {sym}: {len(df)} candles")
-                    continue
+            df = None
+            if data_map and sym in data_map:
+                df = data_map[sym]
+                logger.debug(f"Usando dados do DB para {sym} ({len(df)} samples)")
+            
+            if df is None or df.empty:
+                try:
+                    logger.info(f"Baixando histórico yfinance para {sym}...")
+                    df = yf.download(sym, period=f"{years}y", interval="1d", progress=False, auto_adjust=True)
+                except Exception as e:
+                    logger.error(f"Erro ao baixar {sym} via yfinance: {e}")
+
+            if df is not None and len(df) >= 200:
                 df = _build_features(df)
                 frames.append(df)
-            except Exception as e:
-                logger.error(f"Erro ao baixar {sym}: {e}")
+            else:
+                logger.warning(f"Histórico insuficiente ou falha para {sym}")
 
         if not frames:
             logger.error("Nenhum dado histórico disponível para treino.")

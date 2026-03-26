@@ -34,38 +34,70 @@ def get_db():
             time.sleep(5)
 
 
-async def run_history_fetcher():
-    """Baixa 5 anos de OHLCV via yfinance e persiste no DB para treino do RandomForest."""
+async def _fetch_from_ibkr(sym: str, years: int):
+    """Fallback para buscar histórico via IBKR API."""
+    import random
+    from ib_insync import IB, Stock
+    ib = IB()
     try:
-        import yfinance as yf
-        conn = get_db()
-        cursor = conn.cursor()
-        logger.info(f"Iniciando download do histórico: {US_SYMBOLS}")
-        for sym in US_SYMBOLS:
-            try:
-                df = yf.download(sym, period=f"{HISTORY_YEARS}y", interval="1d", progress=False, auto_adjust=True)
-                if df.empty:
-                    logger.warning(f"Sem histórico para {sym}.")
-                    continue
-                rows = []
+        client_id = random.randint(30000, 39999)
+        await ib.connectAsync(IB_HOST, IB_PORT, clientId=client_id, timeout=20)
+        contract = Stock(sym, "SMART", "USD")
+        await ib.qualifyContractsAsync(contract)
+        
+        # '5 Y' ou similar
+        duration = f"{years} Y"
+        bars = await ib.reqHistoricalDataAsync(
+            contract, endDateTime="", durationStr=duration,
+            barSizeSetting="1 day", whatToShow="TRADES", useRTH=True
+        )
+        ib.disconnect()
+        return bars
+    except Exception as e:
+        logger.error(f"Fallback IBKR falhou para {sym}: {e}")
+        if ib.isConnected():
+            ib.disconnect()
+        return []
+
+
+async def run_history_fetcher():
+    """Baixa 5 anos de OHLCV via yfinance e persiste no DB. Fallback via IBKR."""
+    conn = get_db()
+    cursor = conn.cursor()
+    logger.info(f"Iniciando download do histórico (yfinance + Fallback IBKR): {US_SYMBOLS}")
+    
+    for sym in US_SYMBOLS:
+        rows = []
+        try:
+            import yfinance as yf
+            df = yf.download(sym, period=f"{HISTORY_YEARS}y", interval="1d", progress=False, auto_adjust=True)
+            if not df.empty:
                 for date, row in df.iterrows():
                     rows.append((
-                        sym,
-                        date.date(),
+                        sym, date.date(),
                         float(row["Open"].iloc[0] if hasattr(row["Open"], "iloc") else row["Open"]),
                         float(row["High"].iloc[0] if hasattr(row["High"], "iloc") else row["High"]),
                         float(row["Low"].iloc[0] if hasattr(row["Low"], "iloc") else row["Low"]),
                         float(row["Close"].iloc[0] if hasattr(row["Close"], "iloc") else row["Close"]),
                         float(row["Volume"].iloc[0] if hasattr(row["Volume"], "iloc") else row["Volume"]),
                     ))
-                cursor.executemany(INSERT_HIST, rows)
-                conn.commit()
-                logger.info(f"Histórico {sym}: {len(rows)} candles salvos.")
-            except Exception as e:
-                logger.error(f"Erro histórico {sym}: {e}")
-        conn.close()
-    except ImportError:
-        logger.warning("yfinance não disponível. Histórico não carregado.")
+        except Exception as e:
+            logger.warning(f"yfinance falhou para {sym}: {e}. Tentando fallback IBKR...")
+
+        if not rows:
+            # Fallback IBKR
+            bars = await _fetch_from_ibkr(sym, HISTORY_YEARS)
+            for b in bars:
+                rows.append((sym, b.date, b.open, b.high, b.low, b.close, b.volume))
+
+        if rows:
+            cursor.executemany(INSERT_HIST, rows)
+            conn.commit()
+            logger.info(f"Histórico {sym}: {len(rows)} candles salvos.")
+        else:
+            logger.error(f"Falha total ao obter histórico para {sym}.")
+            
+    conn.close()
 
 
 async def run_binance_ingester():
