@@ -150,6 +150,9 @@ async def run_ibkr_ingester():
     contracts = [Stock(sym, "SMART", "USD") for sym in US_SYMBOLS]
     await ib.qualifyContractsAsync(*contracts)
 
+    # Habilita dados atrasados (Tipo 3) se não houver assinatura de tempo real
+    ib.reqMarketDataType(3)
+            
     def on_tick(ticker):
         if ticker.bid and ticker.ask:
             cursor.execute(INSERT_TICK, (ticker.contract.symbol, ticker.bid, ticker.ask, "US"))
