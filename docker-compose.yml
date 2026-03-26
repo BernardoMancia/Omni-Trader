@@ -62,6 +62,10 @@ services:
       IBKR_SYMBOLS: ${IBKR_SYMBOLS}
       CRYPTO_SYMBOLS: ${CRYPTO_SYMBOLS}
       RF_TRAIN_YEARS: ${RF_TRAIN_YEARS}
+      TZ: America/Sao_Paulo
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     mem_limit: 512m
 
   brain:
@@ -89,8 +93,11 @@ services:
       NEWS_API_KEY: ${NEWS_API_KEY}
       RISK_PCT_PER_TRADE: ${RISK_PCT_PER_TRADE}
       USE_FRACTIONAL_SHARES: ${USE_FRACTIONAL_SHARES}
+      TZ: America/Sao_Paulo
     volumes:
       - rf_models:/tmp
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     mem_limit: 1g
 
   router:
@@ -118,6 +125,10 @@ services:
       INITIAL_CAPITAL_US: ${INITIAL_CAPITAL_US}
       RISK_PCT_PER_TRADE: ${RISK_PCT_PER_TRADE}
       USE_FRACTIONAL_SHARES: ${USE_FRACTIONAL_SHARES}
+      TZ: America/Sao_Paulo
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     ports:
       - "28000:28000"
     mem_limit: 700m
@@ -144,6 +155,10 @@ services:
       TOPIC_CRIPTO: ${TOPIC_CRIPTO}
       TOPIC_LOGS: ${TOPIC_LOGS}
       INITIAL_CAPITAL_US: ${INITIAL_CAPITAL_US}
+      TZ: America/Sao_Paulo
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     mem_limit: 400m
 
   watchdog:
@@ -165,6 +180,10 @@ services:
       TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
       CHAT_ID: ${CHAT_ID}
       TOPIC_LOGS: ${TOPIC_LOGS}
+      TZ: America/Sao_Paulo
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     mem_limit: 200m
 
 volumes:
