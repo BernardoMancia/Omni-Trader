@@ -97,6 +97,8 @@ async def run_history_fetcher():
         else:
             logger.error(f"Falha total ao obter histórico para {sym}.")
             
+        await asyncio.sleep(2)  # Pausa para não sobrecarregar a API
+    
     conn.close()
 
 
