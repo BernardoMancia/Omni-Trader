@@ -31,11 +31,10 @@ services:
       EXISTING_SESSION_DETECTED_ACTION: "primary"
       ACCEPT_INCOMING_CONNECTION: "accept"
       BYPASS_WARNING: "yes"
-      IBC_OverrideTwsApiPort: "24004"
       IBC_TrustedIPs: "0.0.0.0/0"
       IBC_ApiOnly: "false"
     ports:
-      - "24004:24004"
+      - "24004:4001"
       - "25900:5900"
 
   ingester:
@@ -57,7 +56,7 @@ services:
       BINANCE_API_KEY: ${BINANCE_API_KEY}
       BINANCE_SECRET_KEY: ${BINANCE_SECRET_KEY}
       IB_HOST: ibgateway
-      IB_PORT: "24004"
+      IB_PORT: "4001"
       IB_CLIENT_ID: "10"
       IBKR_SYMBOLS: ${IBKR_SYMBOLS}
       CRYPTO_SYMBOLS: ${CRYPTO_SYMBOLS}
@@ -110,7 +109,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
       IB_HOST: ibgateway
-      IB_PORT: "24004"
+      IB_PORT: "4001"
       IB_CLIENT_ID: "1"
       IBKR_ACCOUNT_ID: ${IBKR_ACCOUNT_ID}
       IBKR_COMMISSION_PER_SHARE: ${IBKR_COMMISSION_PER_SHARE}
