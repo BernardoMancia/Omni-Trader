@@ -3,6 +3,7 @@ import asyncio
 import logging
 import json
 import psycopg2
+from datetime import datetime
 from ib_insync import IB, Stock, util
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -14,16 +15,17 @@ DB_PARAMS = {
     "password": os.environ["DB_PASSWORD"],
 }
 IB_HOST = os.environ.get("IB_HOST", "ibgateway")
-IB_PORT = int(os.environ.get("IB_PORT", "24004"))
+IB_PORT = int(os.environ.get("IB_PORT", "4004"))
 US_SYMBOLS = os.environ.get("IBKR_SYMBOLS", "AAPL,MSFT,TSLA,SPY,QQQ,VOO").split(",")
 CRYPTO_SYMBOLS = os.environ.get("CRYPTO_SYMBOLS", "btcusdt,ethusdt,bnbusdt").split(",")
 HISTORY_YEARS = int(os.environ.get("RF_TRAIN_YEARS", "5"))
+HISTORY_UPDATE_MINUTES = 10
 INSERT_TICK = "INSERT INTO market_data (symbol, bid, ask, region) VALUES (%s, %s, %s, %s)"
-INSERT_HIST = "INSERT INTO price_history (symbol, date, open, high, low, close, volume) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (symbol, date) DO NOTHING"
+INSERT_HIST = "INSERT INTO price_history (symbol, date, open, high, low, close, volume) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (symbol, date) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume"
 
 
 def get_db():
-    import time
+    import time as _time
     while True:
         try:
             conn = psycopg2.connect(**DB_PARAMS)
@@ -31,28 +33,45 @@ def get_db():
             return conn
         except Exception as e:
             logger.error(f"DB connect falhou: {e}. Retry em 5s...")
-            time.sleep(5)
+            _time.sleep(5)
+
+
+def _download_history_yfinance(sym: str, period: str = "5y"):
+    try:
+        import yfinance as yf
+        df = yf.download(sym, period=period, interval="1d", progress=False, auto_adjust=True)
+        if df.empty:
+            return []
+        rows = []
+        for date, row in df.iterrows():
+            rows.append((
+                sym, date.date(),
+                float(row["Open"].iloc[0] if hasattr(row["Open"], "iloc") else row["Open"]),
+                float(row["High"].iloc[0] if hasattr(row["High"], "iloc") else row["High"]),
+                float(row["Low"].iloc[0] if hasattr(row["Low"], "iloc") else row["Low"]),
+                float(row["Close"].iloc[0] if hasattr(row["Close"], "iloc") else row["Close"]),
+                int(row["Volume"].iloc[0] if hasattr(row["Volume"], "iloc") else row["Volume"]),
+            ))
+        return rows
+    except Exception as e:
+        logger.warning(f"yfinance falhou para {sym}: {e}")
+        return []
 
 
 async def _fetch_from_ibkr(sym: str, years: int):
-    """Fallback para buscar histórico via IBKR API."""
     import random
-    from ib_insync import IB, Stock
     ib = IB()
     try:
         client_id = random.randint(30000, 39999)
         await ib.connectAsync(IB_HOST, IB_PORT, clientId=client_id, timeout=20)
         contract = Stock(sym, "SMART", "USD")
         await ib.qualifyContractsAsync(contract)
-        
-        # '5 Y' ou similar
-        duration = f"{years} Y"
         bars = await ib.reqHistoricalDataAsync(
-            contract, endDateTime="", durationStr=duration,
+            contract, endDateTime="", durationStr=f"{years} Y",
             barSizeSetting="1 day", whatToShow="TRADES", useRTH=True
         )
         ib.disconnect()
-        return bars
+        return [(sym, b.date, b.open, b.high, b.low, b.close, b.volume) for b in bars]
     except Exception as e:
         logger.error(f"Fallback IBKR falhou para {sym}: {e}")
         if ib.isConnected():
@@ -61,45 +80,49 @@ async def _fetch_from_ibkr(sym: str, years: int):
 
 
 async def run_history_fetcher():
-    """Baixa 5 anos de OHLCV via yfinance e persiste no DB. Fallback via IBKR."""
     conn = get_db()
     cursor = conn.cursor()
-    logger.info(f"Iniciando download do histórico (yfinance + Fallback IBKR): {US_SYMBOLS}")
-    
+    logger.info(f"Iniciando download do histórico completo ({HISTORY_YEARS}Y): {US_SYMBOLS}")
+
     for sym in US_SYMBOLS:
-        rows = []
-        try:
-            import yfinance as yf
-            df = yf.download(sym, period=f"{HISTORY_YEARS}y", interval="1d", progress=False, auto_adjust=True)
-            if not df.empty:
-                for date, row in df.iterrows():
-                    rows.append((
-                        sym, date.date(),
-                        float(row["Open"].iloc[0] if hasattr(row["Open"], "iloc") else row["Open"]),
-                        float(row["High"].iloc[0] if hasattr(row["High"], "iloc") else row["High"]),
-                        float(row["Low"].iloc[0] if hasattr(row["Low"], "iloc") else row["Low"]),
-                        float(row["Close"].iloc[0] if hasattr(row["Close"], "iloc") else row["Close"]),
-                        float(row["Volume"].iloc[0] if hasattr(row["Volume"], "iloc") else row["Volume"]),
-                    ))
-        except Exception as e:
-            logger.warning(f"yfinance falhou para {sym}: {e}. Tentando fallback IBKR...")
-
+        rows = _download_history_yfinance(sym, f"{HISTORY_YEARS}y")
         if not rows:
-            # Fallback IBKR
-            bars = await _fetch_from_ibkr(sym, HISTORY_YEARS)
-            for b in bars:
-                rows.append((sym, b.date, b.open, b.high, b.low, b.close, b.volume))
-
+            rows = await _fetch_from_ibkr(sym, HISTORY_YEARS)
         if rows:
             cursor.executemany(INSERT_HIST, rows)
             conn.commit()
             logger.info(f"Histórico {sym}: {len(rows)} candles salvos.")
         else:
             logger.error(f"Falha total ao obter histórico para {sym}.")
-            
-        await asyncio.sleep(2)  # Pausa para não sobrecarregar a API
-    
+        await asyncio.sleep(2)
+
     conn.close()
+    logger.info("Download inicial do histórico concluído.")
+
+
+async def run_history_updater():
+    await asyncio.sleep(30)
+    while True:
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            now = datetime.utcnow()
+            logger.info(f"Atualizando histórico (loop {HISTORY_UPDATE_MINUTES}min)...")
+
+            for sym in US_SYMBOLS:
+                rows = _download_history_yfinance(sym, "5d")
+                if rows:
+                    cursor.executemany(INSERT_HIST, rows)
+                    conn.commit()
+                    logger.debug(f"Histórico {sym} atualizado: {len(rows)} candles.")
+                await asyncio.sleep(1)
+
+            conn.close()
+            logger.info(f"Atualização de histórico concluída. Próxima em {HISTORY_UPDATE_MINUTES}min.")
+        except Exception as e:
+            logger.error(f"Erro no history updater: {e}")
+
+        await asyncio.sleep(HISTORY_UPDATE_MINUTES * 60)
 
 
 async def run_binance_ingester():
@@ -149,10 +172,8 @@ async def run_ibkr_ingester():
 
     contracts = [Stock(sym, "SMART", "USD") for sym in US_SYMBOLS]
     await ib.qualifyContractsAsync(*contracts)
-
-    # Habilita dados atrasados (Tipo 3) se não houver assinatura de tempo real
     ib.reqMarketDataType(3)
-            
+
     def on_tick(ticker):
         if ticker.bid and ticker.ask:
             cursor.execute(INSERT_TICK, (ticker.contract.symbol, ticker.bid, ticker.ask, "US"))
@@ -176,6 +197,7 @@ async def main():
             await asyncio.gather(
                 run_binance_ingester(),
                 run_ibkr_ingester(),
+                run_history_updater(),
             )
         except Exception as e:
             logger.error(f"Ingester crash: {e}. Reiniciando em 10s...")

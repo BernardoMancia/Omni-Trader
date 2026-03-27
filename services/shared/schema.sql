@@ -20,6 +20,31 @@ CREATE TABLE IF NOT EXISTS price_history (
     PRIMARY KEY (symbol, date)
 );
 
+CREATE TABLE IF NOT EXISTS predictions (
+    time        TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+    symbol      TEXT              NOT NULL,
+    direction   TEXT              NOT NULL,
+    confidence  DOUBLE PRECISION  NOT NULL,
+    horizon_days INTEGER          NOT NULL DEFAULT 1,
+    source      TEXT              NOT NULL DEFAULT 'forest'
+);
+SELECT create_hypertable('predictions', 'time', if_not_exists => TRUE);
+
+CREATE TABLE IF NOT EXISTS ai_thoughts (
+    time        TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
+    symbol      TEXT              NOT NULL,
+    thought     TEXT              NOT NULL,
+    rsi         DOUBLE PRECISION,
+    macd        DOUBLE PRECISION,
+    sentiment   DOUBLE PRECISION,
+    rf_signal   TEXT,
+    rf_conf     DOUBLE PRECISION,
+    ppo_action  TEXT,
+    ppo_conf    DOUBLE PRECISION,
+    final_action TEXT             NOT NULL DEFAULT 'HOLD'
+);
+SELECT create_hypertable('ai_thoughts', 'time', if_not_exists => TRUE);
+
 CREATE TABLE IF NOT EXISTS sentiment_scores (
     time    TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
     symbol  TEXT              NOT NULL,
@@ -54,3 +79,5 @@ CREATE INDEX IF NOT EXISTS idx_market_data_symbol_time   ON market_data (symbol,
 CREATE INDEX IF NOT EXISTS idx_trade_logs_symbol_time    ON trade_logs (symbol, time DESC);
 CREATE INDEX IF NOT EXISTS idx_trade_logs_is_deleted     ON trade_logs (is_deleted, time DESC);
 CREATE INDEX IF NOT EXISTS idx_sentiment_symbol_time     ON sentiment_scores (symbol, time DESC);
+CREATE INDEX IF NOT EXISTS idx_predictions_symbol_time   ON predictions (symbol, time DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_thoughts_symbol_time   ON ai_thoughts (symbol, time DESC);

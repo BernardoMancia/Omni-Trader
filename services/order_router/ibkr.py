@@ -3,15 +3,31 @@ import asyncio
 import logging
 import random
 from ib_insync import IB, Stock, Order, MarketOrder, util
-from services.shared.risk import RiskManager, MarketState
+from services.shared.risk import RiskManager, MarketState, MAX_SINGLE_POSITION_PCT
 
 logger = logging.getLogger("IBKRRouter")
 
 IB_HOST = os.environ.get("IB_HOST", "ibgateway")
-IB_PORT = int(os.environ.get("IB_PORT", "24004"))
+IB_PORT = int(os.environ.get("IB_PORT", "4004"))
 IBKR_ACCOUNT_ID = os.environ.get("IBKR_ACCOUNT_ID", "")
 IBKR_COMMISSION_PER_SHARE = float(os.environ.get("IBKR_COMMISSION_PER_SHARE", "0.005"))
 IBKR_COMMISSION_MIN = float(os.environ.get("IBKR_COMMISSION_MIN", "1.0"))
+
+try:
+    import exchange_calendars as xcals
+    import pandas as pd
+    NYSE_CAL = xcals.get_calendar("XNYS")
+    _XCALS_OK = True
+except Exception:
+    NYSE_CAL = None
+    _XCALS_OK = False
+
+
+def _is_market_open() -> bool:
+    if not _XCALS_OK or NYSE_CAL is None:
+        return True
+    now = pd.Timestamp.now(tz="America/New_York")
+    return NYSE_CAL.is_open_on_minute(now)
 
 
 class IBKRRouter:
@@ -58,6 +74,10 @@ class IBKRRouter:
         use_fractional: bool = False,
         equity: float | None = None,
     ) -> dict:
+        if not _is_market_open():
+            logger.info(f"Mercado fechado. Ordem {side} {symbol} adiada para SHADOW.")
+            return await self._shadow_trade(symbol, quantity, side)
+
         if self.risk.state == MarketState.RED:
             return await self._shadow_trade(symbol, quantity, side)
 
@@ -88,19 +108,22 @@ class IBKRRouter:
                 logger.warning(f"Preço não disponível para {symbol}, abortando ordem.")
                 return {"status": "error", "reason": "no_price"}
 
+            max_position_value = real_equity * MAX_SINGLE_POSITION_PCT
             if use_fractional:
-                stake = self.risk.get_risk_amount()
+                stake = min(self.risk.get_risk_amount(), max_position_value)
             else:
                 qty_calc = self.risk.get_position_size(mid_price)
                 quantity = max(1, int(qty_calc))
+                if quantity * mid_price > max_position_value:
+                    quantity = max(1, int(max_position_value / mid_price))
                 stake = quantity * mid_price
 
             estimated_profit_usd = stake * 0.015
             fee = self._estimate_fee(quantity if not use_fractional else stake / mid_price, mid_price)
 
             if not self.risk.validate_fee_viability(estimated_profit_usd, fee):
-                logger.warning(f"Trade {symbol} abortado: lucro < taxa×4. Saldo pode ser baixo demais.")
-                return {"status": "aborted", "reason": "fee_not_viable", "fee": fee, "est_profit": estimated_profit_usd}
+                logger.warning(f"Trade {symbol} abortado: lucro < taxa×4.")
+                return {"status": "aborted", "reason": "fee_not_viable", "fee": fee}
 
             if use_fractional:
                 order = Order()

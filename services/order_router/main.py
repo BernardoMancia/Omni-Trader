@@ -3,6 +3,7 @@ import asyncio
 import logging
 import psycopg2
 import uvicorn
+import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel
 from services.shared.risk import RiskManager, MarketState
@@ -16,6 +17,7 @@ DB_PARAMS = {
     "dbname": os.environ["DB_NAME"], "user": os.environ["DB_USER"],
     "password": os.environ["DB_PASSWORD"],
 }
+NOTIFIER_URL = os.environ.get("NOTIFIER_URL", "http://notifier:8001/notify")
 
 app = FastAPI(title="Omni-Trader Smart Order Router")
 ibkr_router: IBKRRouter | None = None
@@ -45,6 +47,14 @@ def _log_trade(symbol: str, side: str, quantity: float, mode: str, region: str, 
         logger.error(f"Erro ao logar trade: {e}")
 
 
+async def _notify(topic: str, text: str):
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(NOTIFIER_URL, json={"topic": topic, "text": text})
+    except Exception:
+        pass
+
+
 @app.on_event("startup")
 async def startup_event():
     global ibkr_router, risk_us
@@ -60,7 +70,7 @@ async def startup_event():
     )
     ibkr_router = IBKRRouter(risk_manager=risk_us)
     await ibkr_router.connect()
-    logger.info(f"SOR online | IBKR pronto | capital=${initial_capital:,.2f} | risco={risk_pct*100:.1f}%")
+    logger.info(f"SOR v2.0 online | IBKR pronto | capital=${initial_capital:,.2f} | risco={risk_pct*100:.1f}%")
 
 
 @app.post("/order")
@@ -75,8 +85,15 @@ async def place_order(order: OrderRequest):
         )
         if result.get("status") == "submitted":
             _log_trade(order.symbol, order.side, order.quantity, "REAL", "US")
+            await _notify(
+                "invest",
+                f"📊 <b>Ordem Executada</b>\n"
+                f"{'🟢 COMPRA' if order.side == 'BUY' else '🔴 VENDA'} {order.quantity} {order.symbol}\n"
+                f"Estado: {risk_us.state.name}"
+            )
         elif result.get("mode") == "SHADOW":
             _log_trade(order.symbol, order.side, order.quantity, "SHADOW", "US")
+            await _notify("logs", f"👻 SHADOW: {order.side} {order.quantity} {order.symbol}")
         return result
     return {"error": f"Região não suportada: {order.region}"}
 
@@ -107,6 +124,25 @@ async def risk_snapshot():
         "risk_pct": risk_us.risk_pct,
         "use_fractional": risk_us.use_fractional,
     }
+
+
+@app.get("/positions")
+async def positions():
+    if not ibkr_router or not ibkr_router.ib.isConnected():
+        return {"positions": [], "error": "IBKR não conectado"}
+    try:
+        positions = ibkr_router.ib.positions()
+        result = []
+        for pos in positions:
+            result.append({
+                "symbol": pos.contract.symbol,
+                "quantity": pos.position,
+                "avg_cost": pos.avgCost,
+                "value": pos.position * pos.avgCost,
+            })
+        return {"positions": result, "count": len(result)}
+    except Exception as e:
+        return {"positions": [], "error": str(e)}
 
 
 def main():

@@ -93,6 +93,8 @@ services:
       NEWS_API_KEY: ${NEWS_API_KEY}
       RISK_PCT_PER_TRADE: ${RISK_PCT_PER_TRADE}
       USE_FRACTIONAL_SHARES: ${USE_FRACTIONAL_SHARES}
+      NOTIFIER_URL: http://notifier:8001/notify
+      ROUTER_URL: http://router:28000/order
       TZ: America/Sao_Paulo
     volumes:
       - rf_models:/tmp
@@ -125,6 +127,7 @@ services:
       INITIAL_CAPITAL_US: ${INITIAL_CAPITAL_US}
       RISK_PCT_PER_TRADE: ${RISK_PCT_PER_TRADE}
       USE_FRACTIONAL_SHARES: ${USE_FRACTIONAL_SHARES}
+      NOTIFIER_URL: http://notifier:8001/notify
       TZ: America/Sao_Paulo
     volumes:
       - /etc/localtime:/etc/localtime:ro
@@ -154,6 +157,9 @@ services:
       TOPIC_EUA: ${TOPIC_EUA}
       TOPIC_CRIPTO: ${TOPIC_CRIPTO}
       TOPIC_LOGS: ${TOPIC_LOGS}
+      TOPIC_INVEST: ${TOPIC_INVEST}
+      TOPIC_THOUGHTS: ${TOPIC_THOUGHTS}
+      TOPIC_RESULTS: ${TOPIC_RESULTS}
       INITIAL_CAPITAL_US: ${INITIAL_CAPITAL_US}
       TZ: America/Sao_Paulo
     volumes:
