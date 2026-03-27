@@ -63,7 +63,6 @@ CREATE TABLE IF NOT EXISTS system_states (
 SELECT create_hypertable('system_states', 'time', if_not_exists => TRUE);
 
 CREATE TABLE IF NOT EXISTS trade_logs (
-    id          BIGSERIAL         PRIMARY KEY,
     time        TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
     symbol      TEXT              NOT NULL,
     side        TEXT              NOT NULL,
@@ -73,7 +72,7 @@ CREATE TABLE IF NOT EXISTS trade_logs (
     region      TEXT              NOT NULL,
     is_deleted  BOOLEAN           NOT NULL DEFAULT FALSE
 );
-SELECT create_hypertable('trade_logs', 'time', if_not_exists => TRUE, migrate_data => TRUE);
+SELECT create_hypertable('trade_logs', 'time', if_not_exists => TRUE);
 
 CREATE INDEX IF NOT EXISTS idx_market_data_symbol_time   ON market_data (symbol, time DESC);
 CREATE INDEX IF NOT EXISTS idx_trade_logs_symbol_time    ON trade_logs (symbol, time DESC);
