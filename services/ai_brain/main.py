@@ -118,12 +118,6 @@ def _fetch_latest_features(cursor, symbol: str) -> np.ndarray | None:
         return None
 
 
-def _progress_bar(value: float, max_val: float = 100.0, length: int = 10) -> str:
-    filled = int((value / max_val) * length)
-    filled = max(0, min(filled, length))
-    return "█" * filled + "░" * (length - filled)
-
-
 def _signal_emoji(signal: str) -> str:
     m = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}
     return m.get(signal, "⚪")
@@ -135,72 +129,25 @@ def _build_thought(
     final_action: str, market_open: bool
 ) -> str:
     if features is None:
-        return f"⚠️ <b>{symbol}</b> — Dados insuficientes para análise."
+        return f"⚠️ <code>{symbol:>5}</code> │ Dados insuficientes"
 
     rsi, macd_val, macd_sig, bb_pct, ema_20, ema_50, atr, vol_ratio, returns = features.tolist()
 
-    if rsi > 70:
-        rsi_emoji, rsi_tag = "🔴", "Sobrecomprado"
-    elif rsi < 30:
-        rsi_emoji, rsi_tag = "🟢", "Sobrevendido"
-    elif rsi < 45:
-        rsi_emoji, rsi_tag = "🟡", "Fraco"
-    elif rsi > 55:
-        rsi_emoji, rsi_tag = "🔵", "Forte"
-    else:
-        rsi_emoji, rsi_tag = "⚪", "Neutro"
-
-    macd_emoji = "📈" if macd_val > 0 else "📉"
-    macd_tag = "Bullish" if macd_val > 0 else "Bearish"
-    macd_cross = "✅ Cruzamento +" if macd_val > macd_sig else "❌ Cruzamento -"
-
-    if sentiment_score >= 0.6:
-        sent_emoji, sent_tag = "🟢", "Otimista"
-    elif sentiment_score >= 0.5:
-        sent_emoji, sent_tag = "🔵", "Neutro-Positivo"
-    elif sentiment_score >= 0.4:
-        sent_emoji, sent_tag = "🟡", "Cauteloso"
-    else:
-        sent_emoji, sent_tag = "🔴", "Defensivo"
-
-    ret_pct = returns * 100
-    ret_emoji = "📈" if ret_pct > 0 else "📉" if ret_pct < 0 else "➡️"
-
-    rf_em = _signal_emoji(rf_decision['signal'])
-    ppo_em = _signal_emoji(ppo_decision['action'])
     fa_clean = final_action.split(" ")[0] if isinstance(final_action, str) else final_action
     fa_em = _signal_emoji(fa_clean)
-
-    trend_emoji = "🔼" if ema_20 > ema_50 else "🔽"
-    trend_tag = "Alta" if ema_20 > ema_50 else "Baixa"
-
-    market_em = "🟢" if market_open else "🔴"
-    market_tag = "Aberto" if market_open else "Fechado"
-
-    rsi_bar = _progress_bar(rsi)
-    sent_bar = _progress_bar(sentiment_score * 100)
-    rf_bar = _progress_bar(rf_decision['confidence'] * 100)
-    ppo_bar = _progress_bar(ppo_decision['confidence'] * 100)
+    trend = "▲" if ema_20 > ema_50 else "▼"
+    macd_dir = "+" if macd_val > 0 else "-"
+    rf_s = rf_decision['signal'][0]
+    ppo_s = ppo_decision['action'][0]
 
     return (
-        f"{'━' * 28}\n"
-        f"{fa_em} <b>{symbol}</b> │ Decisão: <b>{final_action}</b>\n"
-        f"{'━' * 28}\n"
-        f"\n"
-        f"📊 <b>Indicadores Técnicos</b>\n"
-        f"  {rsi_emoji} RSI: <code>{rsi:.1f}</code> {rsi_bar} {rsi_tag}\n"
-        f"  {macd_emoji} MACD: <code>{macd_val:+.4f}</code> {macd_tag}\n"
-        f"     {macd_cross}\n"
-        f"  📊 BB%: <code>{bb_pct:.2f}</code> │ ATR: <code>{atr:.2f}</code>\n"
-        f"  {ret_emoji} Retorno: <code>{ret_pct:+.2f}%</code> │ Vol: <code>{vol_ratio:.2f}x</code>\n"
-        f"  {trend_emoji} Tendência: EMA20 {'▸' if ema_20 > ema_50 else '◂'} EMA50 ({trend_tag})\n"
-        f"\n"
-        f"🤖 <b>Sinais da IA</b>\n"
-        f"  {rf_em} RF: <b>{rf_decision['signal']}</b> {rf_bar} {rf_decision['confidence']:.0%}\n"
-        f"  {ppo_em} PPO: <b>{ppo_decision['action']}</b> {ppo_bar} {ppo_decision['confidence']:.0%}\n"
-        f"  {sent_emoji} Sentimento: <code>{sentiment_score:.2f}</code> {sent_bar} {sent_tag}\n"
-        f"\n"
-        f"  {market_em} Mercado: {market_tag}\n"
+        f"{fa_em} <code>{symbol:>5}</code> │ "
+        f"RSI <code>{rsi:5.1f}</code> │ "
+        f"MACD {macd_dir} │ "
+        f"{trend} │ "
+        f"RF:{rf_s} <code>{rf_decision['confidence']:.0%}</code> │ "
+        f"PPO:{ppo_s} <code>{ppo_decision['confidence']:.0%}</code> │ "
+        f"<b>{fa_clean}</b>"
     )
 
 
@@ -399,7 +346,8 @@ async def main():
 
             if thoughts_batch:
                 now_str = now.strftime("%d/%m/%Y %H:%M UTC")
-                market_status = "🟢 ABERTO" if market_open else "🔴 FECHADO"
+                market_em = "🟢" if market_open else "🔴"
+                market_tag = "ABERTO" if market_open else "FECHADO"
 
                 if sentiment_score >= 0.6:
                     sent_tag = "🟢 Otimista"
@@ -410,29 +358,21 @@ async def main():
                 else:
                     sent_tag = "🔴 Defensivo"
 
-                header = (
-                    f"🧠 <b>OMNI-TRADER — Análise IA</b>\n"
-                    f"{'━' * 28}\n"
-                    f"⏰ {now_str}\n"
-                    f"📡 Mercado: {market_status}\n"
-                    f"🌍 Sentimento Global: <b>{sentiment_score:.2f}</b> {sent_tag}\n"
-                    f"📋 Ativos: <b>{len(thoughts_batch)}</b> analisados\n"
-                    f"{'━' * 28}\n"
-                )
-
-                MAX_MSG_LEN = 4000
-                current_msg = header
-                msg_count = 0
-
+                lines = [
+                    f"🧠 <b>OMNI-TRADER — Análise IA</b>",
+                    f"⏰ {now_str} │ {market_em} {market_tag}",
+                    f"🌍 Sent: <b>{sentiment_score:.2f}</b> {sent_tag} │ 📋 {len(thoughts_batch)} ativos",
+                    f"{'━' * 38}",
+                    f"📝  ATIVO  │  RSI  │MACD│▲▼│  RF  │  PPO │ AÇÃO",
+                    f"{'─' * 38}",
+                ]
                 for t in thoughts_batch:
-                    if len(current_msg) + len(t) + 10 > MAX_MSG_LEN:
-                        await _notify_telegram("thoughts", current_msg)
-                        msg_count += 1
-                        current_msg = f"🧠 <b>Análise IA</b> (parte {msg_count + 1})\n{'━' * 28}\n"
-                    current_msg += f"\n{t}\n"
+                    lines.append(t)
+                lines.append(f"{'━' * 38}")
+                lines.append(f"🤖 <i>Omni-Trader v2.0</i>")
 
-                current_msg += f"\n{'━' * 28}\n🤖 <i>Omni-Trader v2.0 • IA Autônoma</i>"
-                await _notify_telegram("thoughts", current_msg)
+                full_msg = "\n".join(lines)
+                await _notify_telegram("thoughts", full_msg)
 
             conn.close()
 
