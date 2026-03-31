@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<brModelo>
+  <modelo tipo="conceitual" versao="3.31" nome="Omni-Trader v2.0">
+    <entidade id="1" nome="market_data" x="80" y="60">
+      <atributo id="101" nome="time" chave="true"/>
+      <atributo id="102" nome="symbol" chave="false"/>
+      <atributo id="103" nome="bid" chave="false"/>
+      <atributo id="104" nome="ask" chave="false"/>
+      <atributo id="105" nome="region" chave="false"/>
+    </entidade>
+
+    <entidade id="2" nome="price_history" x="500" y="60">
+      <atributo id="201" nome="symbol" chave="true"/>
+      <atributo id="202" nome="date" chave="true"/>
+      <atributo id="203" nome="open" chave="false"/>
+      <atributo id="204" nome="high" chave="false"/>
+      <atributo id="205" nome="low" chave="false"/>
+      <atributo id="206" nome="close" chave="false"/>
+      <atributo id="207" nome="volume" chave="false"/>
+    </entidade>
+
+    <entidade id="3" nome="predictions" x="80" y="340">
+      <atributo id="301" nome="time" chave="true"/>
+      <atributo id="302" nome="symbol" chave="false"/>
+      <atributo id="303" nome="direction" chave="false"/>
+      <atributo id="304" nome="confidence" chave="false"/>
+      <atributo id="305" nome="horizon_days" chave="false"/>
+      <atributo id="306" nome="source" chave="false"/>
+    </entidade>
+
+    <entidade id="4" nome="ai_thoughts" x="500" y="340">
+      <atributo id="401" nome="time" chave="true"/>
+      <atributo id="402" nome="symbol" chave="false"/>
+      <atributo id="403" nome="thought" chave="false"/>
+      <atributo id="404" nome="rsi" chave="false"/>
+      <atributo id="405" nome="macd" chave="false"/>
+      <atributo id="406" nome="sentiment" chave="false"/>
+      <atributo id="407" nome="rf_signal" chave="false"/>
+      <atributo id="408" nome="rf_conf" chave="false"/>
+      <atributo id="409" nome="ppo_action" chave="false"/>
+      <atributo id="410" nome="ppo_conf" chave="false"/>
+      <atributo id="411" nome="final_action" chave="false"/>
+    </entidade>
+
+    <entidade id="5" nome="sentiment_scores" x="80" y="620">
+      <atributo id="501" nome="time" chave="true"/>
+      <atributo id="502" nome="symbol" chave="false"/>
+      <atributo id="503" nome="score" chave="false"/>
+    </entidade>
+
+    <entidade id="6" nome="system_states" x="500" y="620">
+      <atributo id="601" nome="time" chave="true"/>
+      <atributo id="602" nome="region" chave="false"/>
+      <atributo id="603" nome="state" chave="false"/>
+      <atributo id="604" nome="drawdown" chave="false"/>
+      <atributo id="605" nome="max_drawdown" chave="false"/>
+      <atributo id="606" nome="capital_ref" chave="false"/>
+    </entidade>
+
+    <entidade id="7" nome="trade_logs" x="900" y="620">
+      <atributo id="701" nome="time" chave="true"/>
+      <atributo id="702" nome="symbol" chave="false"/>
+      <atributo id="703" nome="side" chave="false"/>
+      <atributo id="704" nome="quantity" chave="false"/>
+      <atributo id="705" nome="price" chave="false"/>
+      <atributo id="706" nome="mode" chave="false"/>
+      <atributo id="707" nome="region" chave="false"/>
+      <atributo id="708" nome="is_deleted" chave="false"/>
+    </entidade>
+
+    <relacionamento id="10" nome="alimenta" x="290" y="100">
+      <conexao entidade="1" cardinalidade="(1,n)"/>
+      <conexao entidade="2" cardinalidade="(1,1)"/>
+    </relacionamento>
+
+    <relacionamento id="11" nome="gera" x="290" y="280">
+      <conexao entidade="2" cardinalidade="(1,n)"/>
+      <conexao entidade="3" cardinalidade="(1,n)"/>
+    </relacionamento>
+
+    <relacionamento id="12" nome="analisa" x="290" y="400">
+      <conexao entidade="3" cardinalidade="(1,n)"/>
+      <conexao entidade="4" cardinalidade="(1,1)"/>
+    </relacionamento>
+
+    <relacionamento id="13" nome="influencia" x="290" y="560">
+      <conexao entidade="5" cardinalidade="(1,n)"/>
+      <conexao entidade="4" cardinalidade="(1,1)"/>
+    </relacionamento>
+
+    <relacionamento id="14" nome="registra" x="700" y="680">
+      <conexao entidade="6" cardinalidade="(1,n)"/>
+      <conexao entidade="7" cardinalidade="(1,n)"/>
+    </relacionamento>
+  </modelo>
+</brModelo>
