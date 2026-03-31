@@ -270,7 +270,25 @@ async def main():
     initial_capital = float(os.environ.get("INITIAL_CAPITAL_US", "10000"))
 
     if not forest.is_ready():
-        logger.info("Tentando carregar histórico do DB para treino...")
+        logger.info("Aguardando ingester popular o DB com histórico...")
+        await _notify_telegram("thoughts", "⏳ Brain aguardando dados do ingester...")
+
+        for wait_attempt in range(30):
+            try:
+                conn = psycopg2.connect(**DB_PARAMS)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM price_history")
+                count = cursor.fetchone()[0]
+                conn.close()
+                if count >= 200:
+                    logger.info(f"DB pronto com {count} registros de price_history")
+                    break
+                logger.info(f"DB tem {count} registros. Aguardando ingester... ({wait_attempt + 1}/30)")
+            except Exception:
+                pass
+            await asyncio.sleep(10)
+
+        logger.info("Carregando histórico do DB para treino...")
         try:
             conn = psycopg2.connect(**DB_PARAMS)
             cursor = conn.cursor()
@@ -286,8 +304,13 @@ async def main():
                     df = pd.DataFrame(rows, columns=cols)
                     df.set_index("Date", inplace=True)
                     db_data[sym] = df
+                    logger.info(f"📊 {sym}: {len(df)} registros do DB")
             conn.close()
-            forest.train(symbols=IBKR_SYMBOLS, years=RF_TRAIN_YEARS, data_map=db_data)
+            if db_data:
+                forest.train(symbols=IBKR_SYMBOLS, years=RF_TRAIN_YEARS, data_map=db_data)
+            else:
+                logger.warning("DB vazio, treinando via yfinance...")
+                forest.train(symbols=IBKR_SYMBOLS, years=RF_TRAIN_YEARS)
         except Exception as e:
             logger.error(f"Falha ao carregar dados do DB para treino: {e}")
             forest.train(symbols=IBKR_SYMBOLS, years=RF_TRAIN_YEARS)

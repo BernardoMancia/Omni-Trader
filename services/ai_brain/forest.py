@@ -73,20 +73,29 @@ class ForestEngine:
             df = None
             if data_map and sym in data_map:
                 df = data_map[sym]
-                logger.debug(f"Usando dados do DB para {sym} ({len(df)} samples)")
+                if df is not None and not df.empty:
+                    logger.debug(f"Usando dados do DB para {sym} ({len(df)} registros)")
             
             if df is None or df.empty:
-                try:
-                    logger.info(f"Baixando histórico yfinance para {sym}...")
-                    df = yf.download(sym, period=f"{years}y", interval="1d", progress=False, auto_adjust=True)
-                except Exception as e:
-                    logger.error(f"Erro ao baixar {sym} via yfinance: {e}")
+                for attempt in range(3):
+                    try:
+                        logger.info(f"Baixando histórico yfinance para {sym} (tentativa {attempt + 1}/3)...")
+                        import time as _time
+                        _time.sleep(2 + attempt * 3)
+                        df = yf.download(sym, period=f"{years}y", interval="1d", progress=False, auto_adjust=True)
+                        if df is not None and not df.empty:
+                            break
+                    except Exception as e:
+                        logger.error(f"Erro ao baixar {sym} via yfinance: {e}")
+                        if attempt < 2:
+                            _time.sleep(5)
 
             if df is not None and len(df) >= 200:
                 df = _build_features(df)
                 frames.append(df)
+                logger.info(f"✅ {sym}: {len(df)} amostras carregadas")
             else:
-                logger.warning(f"Histórico insuficiente ou falha para {sym}")
+                logger.warning(f"⚠️ Histórico insuficiente ou falha para {sym}")
 
         if not frames:
             logger.error("Nenhum dado histórico disponível para treino.")
