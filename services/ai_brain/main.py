@@ -193,7 +193,7 @@ def _build_thought(
         f"     {macd_cross}\n"
         f"  📊 BB%: <code>{bb_pct:.2f}</code> │ ATR: <code>{atr:.2f}</code>\n"
         f"  {ret_emoji} Retorno: <code>{ret_pct:+.2f}%</code> │ Vol: <code>{vol_ratio:.2f}x</code>\n"
-        f"  {trend_emoji} Tendência: EMA20{'>' if ema_20 > ema_50 else '<'}EMA50 ({trend_tag})\n"
+        f"  {trend_emoji} Tendência: EMA20 {'▸' if ema_20 > ema_50 else '◂'} EMA50 ({trend_tag})\n"
         f"\n"
         f"🤖 <b>Sinais da IA</b>\n"
         f"  {rf_em} RF: <b>{rf_decision['signal']}</b> {rf_bar} {rf_decision['confidence']:.0%}\n"
