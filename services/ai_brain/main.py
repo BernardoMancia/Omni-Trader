@@ -35,6 +35,7 @@ IBKR_SYMBOLS = os.environ.get("IBKR_SYMBOLS", "AAPL,MSFT,TSLA,SPY,QQQ,VOO").spli
 RF_TRAIN_YEARS = int(os.environ.get("RF_TRAIN_YEARS", "5"))
 LOOP_INTERVAL = int(os.environ.get("BRAIN_LOOP_INTERVAL", "15"))
 PPO_CONFIDENCE_MIN = float(os.environ.get("PPO_CONFIDENCE_MIN", "0.70"))
+SLEEP_OUTSIDE_MARKET = int(os.environ.get("SLEEP_OUTSIDE_MARKET", "300"))
 
 
 class PPOActorCritic(nn.Module):
@@ -74,6 +75,11 @@ def is_market_open() -> bool:
         return True
     now = pd.Timestamp.now(tz="America/New_York")
     return NYSE_CAL.is_open_on_minute(now)
+
+
+def _get_ny_time():
+    import pytz
+    return datetime.now(pytz.timezone("America/New_York"))
 
 
 def _fetch_latest_features(cursor, symbol: str) -> np.ndarray | None:
@@ -119,34 +125,34 @@ def _fetch_latest_features(cursor, symbol: str) -> np.ndarray | None:
 
 
 def _signal_emoji(signal: str) -> str:
-    m = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡"}
-    return m.get(signal, "⚪")
+    m = {"BUY": "\U0001f7e2", "SELL": "\U0001f534", "HOLD": "\U0001f7e1"}
+    return m.get(signal, "\u26aa")
 
 
 def _build_thought(
     symbol: str, features: np.ndarray | None,
     sentiment_score: float, rf_decision: dict, ppo_decision: dict,
-    final_action: str, market_open: bool
+    final_action: str, market_open: bool, score: float = 0.0
 ) -> str:
     if features is None:
-        return f"⚠️ <code>{symbol:>5}</code> │ Dados insuficientes"
+        return f"\u26a0\ufe0f <code>{symbol:>5}</code> \u2502 Dados insuficientes"
 
     rsi, macd_val, macd_sig, bb_pct, ema_20, ema_50, atr, vol_ratio, returns = features.tolist()
 
     fa_clean = final_action.split(" ")[0] if isinstance(final_action, str) else final_action
     fa_em = _signal_emoji(fa_clean)
-    trend = "▲" if ema_20 > ema_50 else "▼"
+    trend = "\u25b2" if ema_20 > ema_50 else "\u25bc"
     macd_dir = "+" if macd_val > 0 else "-"
     rf_s = rf_decision['signal'][0]
     ppo_s = ppo_decision['action'][0]
 
     return (
-        f"{fa_em} <code>{symbol:>5}</code> │ "
-        f"RSI <code>{rsi:5.1f}</code> │ "
-        f"MACD {macd_dir} │ "
-        f"{trend} │ "
-        f"RF:{rf_s} <code>{rf_decision['confidence']:.0%}</code> │ "
-        f"PPO:{ppo_s} <code>{ppo_decision['confidence']:.0%}</code> │ "
+        f"{fa_em} <code>{symbol:>5}</code> \u2502 "
+        f"RSI <code>{rsi:5.1f}</code> \u2502 "
+        f"MACD {macd_dir} \u2502 "
+        f"{trend} \u2502 "
+        f"RF:{rf_s} <code>{rf_decision['confidence']:.0%}</code> \u2502 "
+        f"PPO:{ppo_s} <code>{ppo_decision['confidence']:.0%}</code> \u2502 "
         f"<b>{fa_clean}</b>"
     )
 
@@ -189,6 +195,20 @@ def _update_system_state(cursor, conn, state_name: str, drawdown: float, max_dd:
         conn.rollback()
 
 
+def _log_trade(cursor, conn, symbol: str, side: str, quantity: float, price: float, mode: str = "PAPER"):
+    try:
+        cursor.execute(
+            "INSERT INTO trade_logs (symbol, side, quantity, price, mode, region, is_deleted) "
+            "VALUES (%s, %s, %s, %s, %s, %s, FALSE)",
+            (symbol, side, quantity, price, mode, "US")
+        )
+        conn.commit()
+        logger.info(f"\U0001f4be Trade registrado: {side} {quantity:.4f} {symbol} @ ${price:.2f} [{mode}]")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Erro ao registrar trade: {e}")
+
+
 async def _send_order(symbol: str, side: str, quantity: float, use_fractional: bool, equity: float):
     async with httpx.AsyncClient(timeout=8.0) as client:
         payload = {
@@ -210,15 +230,23 @@ async def _notify_telegram(topic: str, text: str):
         pass
 
 
+def _compute_score(rf_decision: dict, ppo_decision: dict, sentiment_score: float) -> float:
+    rf_conf = rf_decision["confidence"]
+    ppo_conf = ppo_decision["confidence"]
+    consensus_bonus = 0.15 if rf_decision["signal"] == ppo_decision["action"] else 0.0
+    return (rf_conf * 0.4) + (ppo_conf * 0.6) + consensus_bonus + (sentiment_score * 0.1)
+
+
 async def main():
     ppo = PPOAgent(state_dim=9)
     forest = ForestEngine()
     sentiment = SentimentEngine()
     initial_capital = float(os.environ.get("INITIAL_CAPITAL_US", "10000"))
+    trading_mode = os.environ.get("IB_TRADING_MODE", "paper").upper()
 
     if not forest.is_ready():
-        logger.info("Aguardando ingester popular o DB com histórico...")
-        await _notify_telegram("thoughts", "⏳ Brain aguardando dados do ingester...")
+        logger.info("Aguardando ingester popular o DB com hist\u00f3rico...")
+        await _notify_telegram("thoughts", "\u23f3 Brain aguardando dados do ingester...")
 
         for wait_attempt in range(30):
             try:
@@ -235,7 +263,7 @@ async def main():
                 pass
             await asyncio.sleep(10)
 
-        logger.info("Carregando histórico do DB para treino...")
+        logger.info("Carregando hist\u00f3rico do DB para treino...")
         try:
             conn = psycopg2.connect(**DB_PARAMS)
             cursor = conn.cursor()
@@ -251,7 +279,7 @@ async def main():
                     df = pd.DataFrame(rows, columns=cols)
                     df.set_index("Date", inplace=True)
                     db_data[sym] = df
-                    logger.info(f"📊 {sym}: {len(df)} registros do DB")
+                    logger.info(f"\U0001f4ca {sym}: {len(df)} registros do DB")
             conn.close()
             if db_data:
                 forest.train(symbols=IBKR_SYMBOLS, years=RF_TRAIN_YEARS, data_map=db_data)
@@ -262,18 +290,37 @@ async def main():
             logger.error(f"Falha ao carregar dados do DB para treino: {e}")
             forest.train(symbols=IBKR_SYMBOLS, years=RF_TRAIN_YEARS)
 
-    logger.info(f"AI Brain v2.0 online | capital_base=${initial_capital:,.2f}")
-    await _notify_telegram("thoughts", f"🧠 AI Brain v2.0 inicializado | Capital: ${initial_capital:,.2f}")
+    logger.info(f"AI Brain v2.0 online | capital_base=${initial_capital:,.2f} | mode={trading_mode}")
+    await _notify_telegram("thoughts", f"\U0001f9e0 AI Brain v2.0 | Capital: ${initial_capital:,.2f} | Mode: {trading_mode}")
 
     last_retrain_day = None
+    sent_sleep_msg_today = False
 
     while True:
         try:
+            market_open = is_market_open()
+            ny_time = _get_ny_time()
+            now = datetime.now(timezone.utc)
+
+            if not market_open:
+                if not sent_sleep_msg_today or ny_time.hour == 0:
+                    logger.info(f"\U0001f634 Mercado fechado ({ny_time.strftime('%H:%M ET')}). Dormindo {SLEEP_OUTSIDE_MARKET}s...")
+                    await _notify_telegram("logs",
+                        f"\U0001f634 Brain em espera \u2502 {ny_time.strftime('%H:%M ET')} \u2502 Mercado fechado\n"
+                        f"\u23f0 Pr\u00f3xima abertura: 09:30 ET"
+                    )
+                    sent_sleep_msg_today = True
+
+                if ny_time.hour == 0:
+                    sent_sleep_msg_today = False
+
+                await asyncio.sleep(SLEEP_OUTSIDE_MARKET)
+                continue
+
+            sent_sleep_msg_today = False
+
             conn = psycopg2.connect(**DB_PARAMS)
             cursor = conn.cursor()
-
-            now = datetime.now(timezone.utc)
-            market_open = is_market_open()
 
             if last_retrain_day != now.date() and now.hour >= 6:
                 logger.info("Retreinando RandomForest com dados atualizados...")
@@ -295,6 +342,7 @@ async def main():
             is_defensive = sentiment.is_defensive(sentiment_score)
 
             thoughts_batch = []
+            candidates = []
 
             for symbol in IBKR_SYMBOLS:
                 features = _fetch_latest_features(cursor, symbol)
@@ -315,64 +363,124 @@ async def main():
                     and ppo_decision["action"] in ("BUY", "SELL")
                 )
 
+                score = _compute_score(rf_decision, ppo_decision, sentiment_score)
                 final_action = "HOLD"
 
-                if strong and not is_defensive and market_open:
-                    final_action = ppo_decision["action"]
-
-                    cursor.execute("SELECT bid, ask FROM market_data WHERE symbol=%s AND region='US' ORDER BY time DESC LIMIT 1", (symbol,))
-                    price_row = cursor.fetchone()
-                    if price_row:
-                        mid_price = (price_row[0] + price_row[1]) / 2.0
-                        use_fractional = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
-                        risk_pct = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
-                        equity = initial_capital
-                        quantity = (equity * risk_pct) / mid_price if use_fractional else max(1, int((equity * risk_pct) / mid_price))
-                        await _send_order(symbol, final_action, quantity, use_fractional, equity)
-                elif strong and not market_open:
-                    final_action = f"HOLD (mercado fechado, sinal era {ppo_decision['action']})"
+                if strong and not is_defensive:
+                    candidates.append({
+                        "symbol": symbol,
+                        "action": ppo_decision["action"],
+                        "score": score,
+                        "rf": rf_decision,
+                        "ppo": ppo_decision,
+                        "features": features,
+                    })
+                    final_action = f"SINAL {ppo_decision['action']}"
                 elif strong and is_defensive:
-                    final_action = f"HOLD (defensivo, sent={sentiment_score:.2f})"
+                    final_action = f"HOLD (defensivo)"
 
                 thought = _build_thought(
-                    symbol, features, sentiment_score, rf_decision, ppo_decision, final_action, market_open
+                    symbol, features, sentiment_score, rf_decision, ppo_decision, final_action, market_open, score
                 )
                 _save_thought(cursor, conn, symbol, thought, features, sentiment_score, rf_decision, ppo_decision, final_action)
                 thoughts_batch.append(thought)
 
                 _log_sentiment(cursor, conn, symbol, sentiment_score)
 
+            executed_trade = None
+            if candidates and market_open:
+                candidates.sort(key=lambda c: c["score"], reverse=True)
+                best = candidates[0]
+
+                cursor.execute(
+                    "SELECT bid, ask FROM market_data WHERE symbol=%s AND region='US' ORDER BY time DESC LIMIT 1",
+                    (best["symbol"],)
+                )
+                price_row = cursor.fetchone()
+                if price_row and price_row[0] and price_row[1]:
+                    mid_price = (price_row[0] + price_row[1]) / 2.0
+                    use_fractional = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
+                    risk_pct = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
+                    equity = initial_capital
+                    quantity = (equity * risk_pct) / mid_price if use_fractional else max(1, int((equity * risk_pct) / mid_price))
+
+                    _log_trade(cursor, conn, best["symbol"], best["action"], quantity, mid_price, trading_mode)
+                    await _send_order(best["symbol"], best["action"], quantity, use_fractional, equity)
+
+                    executed_trade = {
+                        "symbol": best["symbol"],
+                        "action": best["action"],
+                        "quantity": quantity,
+                        "price": mid_price,
+                        "score": best["score"],
+                    }
+
+                    for i, t in enumerate(thoughts_batch):
+                        if f"<code>{best['symbol']:>5}</code>" in t:
+                            thoughts_batch[i] = t.replace(
+                                f"<b>SINAL {best['action']}</b>",
+                                f"<b>\u2705 {best['action']}</b>"
+                            )
+
             _update_system_state(cursor, conn, "NORMAL", 0.0, 0.0, initial_capital)
 
             if thoughts_batch:
                 now_str = now.strftime("%d/%m/%Y %H:%M UTC")
-                market_em = "🟢" if market_open else "🔴"
-                market_tag = "ABERTO" if market_open else "FECHADO"
+                ny_str = ny_time.strftime("%H:%M ET")
 
                 if sentiment_score >= 0.6:
-                    sent_tag = "🟢 Otimista"
+                    sent_tag = "\U0001f7e2 Otimista"
                 elif sentiment_score >= 0.5:
-                    sent_tag = "🔵 Neutro"
+                    sent_tag = "\U0001f535 Neutro"
                 elif sentiment_score >= 0.4:
-                    sent_tag = "🟡 Cauteloso"
+                    sent_tag = "\U0001f7e1 Cauteloso"
                 else:
-                    sent_tag = "🔴 Defensivo"
+                    sent_tag = "\U0001f534 Defensivo"
 
                 lines = [
-                    f"🧠 <b>OMNI-TRADER — Análise IA</b>",
-                    f"⏰ {now_str} │ {market_em} {market_tag}",
-                    f"🌍 Sent: <b>{sentiment_score:.2f}</b> {sent_tag} │ 📋 {len(thoughts_batch)} ativos",
-                    f"{'━' * 38}",
-                    f"📝  ATIVO  │  RSI  │MACD│▲▼│  RF  │  PPO │ AÇÃO",
-                    f"{'─' * 38}",
+                    f"\U0001f9e0 <b>OMNI-TRADER \u2014 An\u00e1lise IA</b>",
+                    f"\u23f0 {now_str} ({ny_str}) \u2502 \U0001f7e2 ABERTO",
+                    f"\U0001f30d Sent: <b>{sentiment_score:.2f}</b> {sent_tag} \u2502 \U0001f4cb {len(thoughts_batch)} ativos",
+                    f"{'\u2501' * 38}",
+                    f"\U0001f4dd  ATIVO  \u2502  RSI  \u2502MACD\u2502\u25b2\u25bc\u2502  RF  \u2502  PPO \u2502 A\u00c7\u00c3O",
+                    f"{'\u2500' * 38}",
                 ]
                 for t in thoughts_batch:
                     lines.append(t)
-                lines.append(f"{'━' * 38}")
-                lines.append(f"🤖 <i>Omni-Trader v2.0</i>")
+                lines.append(f"{'\u2501' * 38}")
+
+                if executed_trade:
+                    et = executed_trade
+                    lines.append(
+                        f"\n\U0001f4b0 <b>TRADE EXECUTADO</b>\n"
+                        f"  {_signal_emoji(et['action'])} <b>{et['action']} {et['symbol']}</b>\n"
+                        f"  \U0001f4b5 Qty: <code>{et['quantity']:.4f}</code> @ <code>${et['price']:.2f}</code>\n"
+                        f"  \U0001f3af Score: <code>{et['score']:.3f}</code> \u2502 Mode: {trading_mode}"
+                    )
+                else:
+                    if candidates:
+                        lines.append(f"\n\u26a0\ufe0f Sinais detectados mas sem pre\u00e7o dispon\u00edvel")
+                    else:
+                        lines.append(f"\n\U0001f7e1 Nenhum sinal forte \u2014 mantendo posi\u00e7\u00f5es")
+
+                lines.append(f"\n\U0001f916 <i>Omni-Trader v2.0</i>")
 
                 full_msg = "\n".join(lines)
                 await _notify_telegram("thoughts", full_msg)
+
+                if executed_trade:
+                    et = executed_trade
+                    invest_msg = (
+                        f"\U0001f4c8 <b>Nova Opera\u00e7\u00e3o</b>\n\n"
+                        f"{_signal_emoji(et['action'])} <b>{et['action']} {et['symbol']}</b>\n"
+                        f"\U0001f4b5 Quantidade: <code>{et['quantity']:.4f}</code>\n"
+                        f"\U0001f4b2 Pre\u00e7o: <code>${et['price']:.2f}</code>\n"
+                        f"\U0001f3af Score IA: <code>{et['score']:.3f}</code>\n"
+                        f"\U0001f30d Sentimento: <code>{sentiment_score:.2f}</code>\n"
+                        f"\U0001f4bc Capital: <code>${initial_capital:,.2f}</code>\n"
+                        f"\u23f0 {now_str}"
+                    )
+                    await _notify_telegram("invest", invest_msg)
 
             conn.close()
 
@@ -395,3 +503,4 @@ def _log_sentiment(cursor, conn, symbol: str, score: float):
 
 if __name__ == "__main__":
     asyncio.run(main())
+
