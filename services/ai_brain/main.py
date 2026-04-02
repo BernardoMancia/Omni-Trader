@@ -82,6 +82,11 @@ def _get_ny_time():
     return datetime.now(pytz.timezone("America/New_York"))
 
 
+def _get_br_time():
+    import pytz
+    return datetime.now(pytz.timezone("America/Sao_Paulo"))
+
+
 def _fetch_latest_features(cursor, symbol: str) -> np.ndarray | None:
     try:
         cursor.execute(
@@ -300,14 +305,16 @@ async def main():
         try:
             market_open = is_market_open()
             ny_time = _get_ny_time()
+            br_time = _get_br_time()
             now = datetime.now(timezone.utc)
 
             if not market_open:
                 if not sent_sleep_msg_today or ny_time.hour == 0:
                     logger.info(f"\U0001f634 Mercado fechado ({ny_time.strftime('%H:%M ET')}). Dormindo {SLEEP_OUTSIDE_MARKET}s...")
                     await _notify_telegram("logs",
-                        f"\U0001f634 Brain em espera \u2502 {ny_time.strftime('%H:%M ET')} \u2502 Mercado fechado\n"
-                        f"\u23f0 Pr\u00f3xima abertura: 09:30 ET"
+                        f"\U0001f634 Brain em espera \u2502 {br_time.strftime('%d/%m/%Y %H:%M BRT')}\n"
+                        f"\U0001f553 NYSE: {ny_time.strftime('%H:%M ET')} \u2502 Mercado fechado\n"
+                        f"\u23f0 Abertura: 09:30 ET (10:30 BRT)"
                     )
                     sent_sleep_msg_today = True
 
@@ -408,7 +415,7 @@ async def main():
             _update_system_state(cursor, conn, "NORMAL", 0.0, 0.0, initial_capital)
 
             if thoughts_batch:
-                now_str = now.strftime("%d/%m/%Y %H:%M UTC")
+                br_str = br_time.strftime("%d/%m/%Y %H:%M BRT")
                 ny_str = ny_time.strftime("%H:%M ET")
                 market_em = "\U0001f7e2" if market_open else "\U0001f534"
                 market_tag = "ABERTO" if market_open else "FECHADO"
@@ -427,7 +434,7 @@ async def main():
 
                 lines = [
                     f"\U0001f9e0 <b>OMNI-TRADER \u2014 An\u00e1lise IA</b>",
-                    f"\u23f0 {now_str} ({ny_str}) \u2502 {market_em} {market_tag}",
+                    f"\U0001f552 {br_str} (NYSE {ny_str}) \u2502 {market_em} {market_tag}",
                     f"\U0001f30d Sent: <b>{sentiment_score:.2f}</b> {sent_tag} \u2502 \U0001f4cb {len(thoughts_batch)} ativos",
                     sep_thick,
                     f"\U0001f4dd  ATIVO  \u2502  RSI  \u2502MACD\u2502\u25b2\u25bc\u2502  RF  \u2502  PPO \u2502 A\u00c7\u00c3O",
@@ -461,7 +468,7 @@ async def main():
                         f"\U0001f3af Score IA: <code>{et['score']:.3f}</code>\n"
                         f"\U0001f30d Sentimento: <code>{sentiment_score:.2f}</code>\n"
                         f"\U0001f4bc Capital: <code>${initial_capital:,.2f}</code>\n"
-                        f"\u23f0 {now_str}"
+                        f"\U0001f552 {br_str} (NYSE {ny_str})"
                     )
                     await _notify_telegram("invest", invest_msg)
 
