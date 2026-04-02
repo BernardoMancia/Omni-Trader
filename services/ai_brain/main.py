@@ -342,7 +342,7 @@ async def main():
             is_defensive = sentiment.is_defensive(sentiment_score)
 
             thoughts_batch = []
-            candidates = []
+            executed_trades = []
 
             for symbol in IBKR_SYMBOLS:
                 features = _fetch_latest_features(cursor, symbol)
@@ -366,18 +366,36 @@ async def main():
                 score = _compute_score(rf_decision, ppo_decision, sentiment_score)
                 final_action = "HOLD"
 
-                if strong and not is_defensive:
-                    candidates.append({
-                        "symbol": symbol,
-                        "action": ppo_decision["action"],
-                        "score": score,
-                        "rf": rf_decision,
-                        "ppo": ppo_decision,
-                        "features": features,
-                    })
+                if strong and not is_defensive and market_open:
+                    final_action = ppo_decision["action"]
+
+                    cursor.execute(
+                        "SELECT bid, ask FROM market_data WHERE symbol=%s AND region='US' ORDER BY time DESC LIMIT 1",
+                        (symbol,)
+                    )
+                    price_row = cursor.fetchone()
+                    if price_row and price_row[0] and price_row[1]:
+                        mid_price = (price_row[0] + price_row[1]) / 2.0
+                        use_fractional = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
+                        risk_pct = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
+                        equity = initial_capital
+                        quantity = (equity * risk_pct) / mid_price if use_fractional else max(1, int((equity * risk_pct) / mid_price))
+
+                        _log_trade(cursor, conn, symbol, final_action, quantity, mid_price, trading_mode)
+                        await _send_order(symbol, final_action, quantity, use_fractional, equity)
+
+                        executed_trades.append({
+                            "symbol": symbol,
+                            "action": final_action,
+                            "quantity": quantity,
+                            "price": mid_price,
+                            "score": score,
+                        })
+                        final_action = f"\u2705 {final_action}"
+                elif strong and not is_defensive and not market_open:
                     final_action = f"SINAL {ppo_decision['action']}"
                 elif strong and is_defensive:
-                    final_action = f"HOLD (defensivo)"
+                    final_action = "HOLD (defensivo)"
 
                 thought = _build_thought(
                     symbol, features, sentiment_score, rf_decision, ppo_decision, final_action, market_open, score
@@ -387,46 +405,13 @@ async def main():
 
                 _log_sentiment(cursor, conn, symbol, sentiment_score)
 
-            executed_trade = None
-            if candidates and market_open:
-                candidates.sort(key=lambda c: c["score"], reverse=True)
-                best = candidates[0]
-
-                cursor.execute(
-                    "SELECT bid, ask FROM market_data WHERE symbol=%s AND region='US' ORDER BY time DESC LIMIT 1",
-                    (best["symbol"],)
-                )
-                price_row = cursor.fetchone()
-                if price_row and price_row[0] and price_row[1]:
-                    mid_price = (price_row[0] + price_row[1]) / 2.0
-                    use_fractional = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
-                    risk_pct = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
-                    equity = initial_capital
-                    quantity = (equity * risk_pct) / mid_price if use_fractional else max(1, int((equity * risk_pct) / mid_price))
-
-                    _log_trade(cursor, conn, best["symbol"], best["action"], quantity, mid_price, trading_mode)
-                    await _send_order(best["symbol"], best["action"], quantity, use_fractional, equity)
-
-                    executed_trade = {
-                        "symbol": best["symbol"],
-                        "action": best["action"],
-                        "quantity": quantity,
-                        "price": mid_price,
-                        "score": best["score"],
-                    }
-
-                    for i, t in enumerate(thoughts_batch):
-                        if f"<code>{best['symbol']:>5}</code>" in t:
-                            thoughts_batch[i] = t.replace(
-                                f"<b>SINAL {best['action']}</b>",
-                                f"<b>\u2705 {best['action']}</b>"
-                            )
-
             _update_system_state(cursor, conn, "NORMAL", 0.0, 0.0, initial_capital)
 
             if thoughts_batch:
                 now_str = now.strftime("%d/%m/%Y %H:%M UTC")
                 ny_str = ny_time.strftime("%H:%M ET")
+                market_em = "\U0001f7e2" if market_open else "\U0001f534"
+                market_tag = "ABERTO" if market_open else "FECHADO"
 
                 if sentiment_score >= 0.6:
                     sent_tag = "\U0001f7e2 Otimista"
@@ -439,7 +424,7 @@ async def main():
 
                 lines = [
                     f"\U0001f9e0 <b>OMNI-TRADER \u2014 An\u00e1lise IA</b>",
-                    f"\u23f0 {now_str} ({ny_str}) \u2502 \U0001f7e2 ABERTO",
+                    f"\u23f0 {now_str} ({ny_str}) \u2502 {market_em} {market_tag}",
                     f"\U0001f30d Sent: <b>{sentiment_score:.2f}</b> {sent_tag} \u2502 \U0001f4cb {len(thoughts_batch)} ativos",
                     f"{'\u2501' * 38}",
                     f"\U0001f4dd  ATIVO  \u2502  RSI  \u2502MACD\u2502\u25b2\u25bc\u2502  RF  \u2502  PPO \u2502 A\u00c7\u00c3O",
@@ -449,27 +434,22 @@ async def main():
                     lines.append(t)
                 lines.append(f"{'\u2501' * 38}")
 
-                if executed_trade:
-                    et = executed_trade
-                    lines.append(
-                        f"\n\U0001f4b0 <b>TRADE EXECUTADO</b>\n"
-                        f"  {_signal_emoji(et['action'])} <b>{et['action']} {et['symbol']}</b>\n"
-                        f"  \U0001f4b5 Qty: <code>{et['quantity']:.4f}</code> @ <code>${et['price']:.2f}</code>\n"
-                        f"  \U0001f3af Score: <code>{et['score']:.3f}</code> \u2502 Mode: {trading_mode}"
-                    )
+                if executed_trades:
+                    lines.append(f"\n\U0001f4b0 <b>TRADES EXECUTADOS ({len(executed_trades)})</b>")
+                    for et in executed_trades:
+                        lines.append(
+                            f"  {_signal_emoji(et['action'])} <b>{et['action']} {et['symbol']}</b> "
+                            f"Qty:<code>{et['quantity']:.4f}</code> @<code>${et['price']:.2f}</code>"
+                        )
                 else:
-                    if candidates:
-                        lines.append(f"\n\u26a0\ufe0f Sinais detectados mas sem pre\u00e7o dispon\u00edvel")
-                    else:
-                        lines.append(f"\n\U0001f7e1 Nenhum sinal forte \u2014 mantendo posi\u00e7\u00f5es")
+                    lines.append(f"\n\U0001f7e1 Nenhum trade neste ciclo")
 
-                lines.append(f"\n\U0001f916 <i>Omni-Trader v2.0</i>")
+                lines.append(f"\n\U0001f916 <i>Omni-Trader v2.0 \u2502 {trading_mode}</i>")
 
                 full_msg = "\n".join(lines)
                 await _notify_telegram("thoughts", full_msg)
 
-                if executed_trade:
-                    et = executed_trade
+                for et in executed_trades:
                     invest_msg = (
                         f"\U0001f4c8 <b>Nova Opera\u00e7\u00e3o</b>\n\n"
                         f"{_signal_emoji(et['action'])} <b>{et['action']} {et['symbol']}</b>\n"
