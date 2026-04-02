@@ -422,17 +422,20 @@ async def main():
                 else:
                     sent_tag = "\U0001f534 Defensivo"
 
+                sep_thick = "\u2501" * 38
+                sep_thin = "\u2500" * 38
+
                 lines = [
                     f"\U0001f9e0 <b>OMNI-TRADER \u2014 An\u00e1lise IA</b>",
                     f"\u23f0 {now_str} ({ny_str}) \u2502 {market_em} {market_tag}",
                     f"\U0001f30d Sent: <b>{sentiment_score:.2f}</b> {sent_tag} \u2502 \U0001f4cb {len(thoughts_batch)} ativos",
-                    f"{'\u2501' * 38}",
+                    sep_thick,
                     f"\U0001f4dd  ATIVO  \u2502  RSI  \u2502MACD\u2502\u25b2\u25bc\u2502  RF  \u2502  PPO \u2502 A\u00c7\u00c3O",
-                    f"{'\u2500' * 38}",
+                    sep_thin,
                 ]
                 for t in thoughts_batch:
                     lines.append(t)
-                lines.append(f"{'\u2501' * 38}")
+                lines.append(sep_thick)
 
                 if executed_trades:
                     lines.append(f"\n\U0001f4b0 <b>TRADES EXECUTADOS ({len(executed_trades)})</b>")
