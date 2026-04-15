@@ -19,7 +19,7 @@ except ImportError:
     _HTTPX_OK = False
 
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "")
-DEFENSIVE_THRESHOLD = 0.3
+DEFENSIVE_THRESHOLD = float(os.environ.get("DEFENSIVE_THRESHOLD", "0.3"))
 CACHE_TTL_SECONDS = 1800
 
 
