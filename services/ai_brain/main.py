@@ -200,6 +200,30 @@ def _update_system_state(cursor, conn, state_name: str, drawdown: float, max_dd:
         conn.rollback()
 
 
+def _get_position(cursor, symbol: str) -> float:
+    try:
+        cursor.execute(
+            "SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END), 0) "
+            "FROM trade_logs WHERE symbol=%s AND is_deleted=FALSE",
+            (symbol,)
+        )
+        row = cursor.fetchone()
+        return float(row[0]) if row else 0.0
+    except Exception:
+        return 0.0
+
+
+def _get_all_positions(cursor) -> dict:
+    try:
+        cursor.execute(
+            "SELECT symbol, COALESCE(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END), 0) as net_qty "
+            "FROM trade_logs WHERE is_deleted=FALSE GROUP BY symbol HAVING SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END) > 0"
+        )
+        return {row[0]: float(row[1]) for row in cursor.fetchall()}
+    except Exception:
+        return {}
+
+
 def _log_trade(cursor, conn, symbol: str, side: str, quantity: float, price: float, mode: str = "PAPER"):
     try:
         cursor.execute(
@@ -371,10 +395,23 @@ async def main():
                 )
 
                 score = _compute_score(rf_decision, ppo_decision, sentiment_score)
+                desired_action = ppo_decision["action"]
                 final_action = "HOLD"
 
+                if desired_action == "SELL":
+                    position = _get_position(cursor, symbol)
+                    if position <= 0:
+                        final_action = "HOLD (sem posicao)"
+                        thought = _build_thought(
+                            symbol, features, sentiment_score, rf_decision, ppo_decision, final_action, market_open, score
+                        )
+                        _save_thought(cursor, conn, symbol, thought, features, sentiment_score, rf_decision, ppo_decision, final_action)
+                        thoughts_batch.append(thought)
+                        _log_sentiment(cursor, conn, symbol, sentiment_score)
+                        continue
+
                 if strong and not is_defensive and market_open:
-                    final_action = ppo_decision["action"]
+                    final_action = desired_action
 
                     cursor.execute(
                         "SELECT bid, ask FROM market_data WHERE symbol=%s AND region='US' ORDER BY time DESC LIMIT 1",
@@ -386,7 +423,13 @@ async def main():
                         use_fractional = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
                         risk_pct = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
                         equity = initial_capital
-                        quantity = (equity * risk_pct) / mid_price if use_fractional else max(1, int((equity * risk_pct) / mid_price))
+
+                        if desired_action == "BUY":
+                            quantity = (equity * risk_pct) / mid_price if use_fractional else max(1, int((equity * risk_pct) / mid_price))
+                        else:
+                            position = _get_position(cursor, symbol)
+                            quantity = min(position, (equity * risk_pct) / mid_price) if use_fractional else min(position, max(1, int((equity * risk_pct) / mid_price)))
+                            quantity = max(0.0001, quantity)
 
                         _log_trade(cursor, conn, symbol, final_action, quantity, mid_price, trading_mode)
                         await _send_order(symbol, final_action, quantity, use_fractional, equity)
@@ -400,7 +443,7 @@ async def main():
                         })
                         final_action = f"\u2705 {final_action}"
                 elif strong and not is_defensive and not market_open:
-                    final_action = f"SINAL {ppo_decision['action']}"
+                    final_action = f"SINAL {desired_action}"
                 elif strong and is_defensive:
                     final_action = "HOLD (defensivo)"
 
