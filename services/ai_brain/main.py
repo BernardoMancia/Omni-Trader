@@ -323,7 +323,7 @@ async def main():
     await _notify_telegram("thoughts", f"\U0001f9e0 AI Brain v2.0 | Capital: ${initial_capital:,.2f} | Mode: {trading_mode}")
 
     last_retrain_day = None
-    sent_sleep_msg_today = False
+    was_market_open = None
 
     while True:
         try:
@@ -332,23 +332,29 @@ async def main():
             br_time = _get_br_time()
             now = datetime.now(timezone.utc)
 
+            if was_market_open is True and not market_open:
+                logger.info("Mercado FECHOU")
+                await _notify_telegram("logs",
+                    f"\U0001f534 <b>Mercado FECHOU</b>\n"
+                    f"\U0001f552 {br_time.strftime('%d/%m/%Y %H:%M BRT')} (NYSE {ny_time.strftime('%H:%M ET')})\n"
+                    f"\U0001f4ca Pr\u00f3xima abertura: 09:30 ET (10:30 BRT)\n"
+                    f"\U0001f634 Brain em modo espera"
+                )
+
+            if (was_market_open is False or was_market_open is None) and market_open:
+                logger.info("Mercado ABRIU")
+                await _notify_telegram("logs",
+                    f"\U0001f7e2 <b>Mercado ABRIU</b>\n"
+                    f"\U0001f552 {br_time.strftime('%d/%m/%Y %H:%M BRT')} (NYSE {ny_time.strftime('%H:%M ET')})\n"
+                    f"\U0001f4b0 Capital: <code>${initial_capital:,.2f}</code> | Mode: {trading_mode}\n"
+                    f"\U0001f9e0 Brain ativo \u2014 monitorando {len(IBKR_SYMBOLS)} ativos"
+                )
+
+            was_market_open = market_open
+
             if not market_open:
-                if not sent_sleep_msg_today or ny_time.hour == 0:
-                    logger.info(f"\U0001f634 Mercado fechado ({ny_time.strftime('%H:%M ET')}). Dormindo {SLEEP_OUTSIDE_MARKET}s...")
-                    await _notify_telegram("logs",
-                        f"\U0001f634 Brain em espera \u2502 {br_time.strftime('%d/%m/%Y %H:%M BRT')}\n"
-                        f"\U0001f553 NYSE: {ny_time.strftime('%H:%M ET')} \u2502 Mercado fechado\n"
-                        f"\u23f0 Abertura: 09:30 ET (10:30 BRT)"
-                    )
-                    sent_sleep_msg_today = True
-
-                if ny_time.hour == 0:
-                    sent_sleep_msg_today = False
-
                 await asyncio.sleep(SLEEP_OUTSIDE_MARKET)
                 continue
-
-            sent_sleep_msg_today = False
 
             conn = psycopg2.connect(**DB_PARAMS)
             cursor = conn.cursor()
