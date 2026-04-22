@@ -99,6 +99,7 @@ services:
       RISK_PCT_PER_TRADE: ${RISK_PCT_PER_TRADE}
       USE_FRACTIONAL_SHARES: ${USE_FRACTIONAL_SHARES}
       IB_TRADING_MODE: ${IB_TRADING_MODE:-paper}
+      TOPIC_BR: ${TOPIC_BR:-0}
       NOTIFIER_URL: http://notifier:8001/notify
       ROUTER_URL: http://router:28000/order
       TZ: America/Sao_Paulo
@@ -166,6 +167,7 @@ services:
       TOPIC_INVEST: ${TOPIC_INVEST}
       TOPIC_THOUGHTS: ${TOPIC_THOUGHTS}
       TOPIC_RESULTS: ${TOPIC_RESULTS}
+      TOPIC_BR: ${TOPIC_BR:-0}
       INITIAL_CAPITAL_US: ${INITIAL_CAPITAL_US}
       TZ: America/Sao_Paulo
     volumes:

@@ -21,6 +21,7 @@ TOPIC_LOGS = int(os.environ.get("TOPIC_LOGS", "0"))
 TOPIC_INVEST = int(os.environ.get("TOPIC_INVEST", "0"))
 TOPIC_THOUGHTS = int(os.environ.get("TOPIC_THOUGHTS", "0"))
 TOPIC_RESULTS = int(os.environ.get("TOPIC_RESULTS", "0"))
+TOPIC_BR = int(os.environ.get("TOPIC_BR", "0"))
 TG_URL = f"https://api.telegram.org/bot{TOKEN}"
 BR_TZ = pytz.timezone("America/Sao_Paulo")
 
@@ -75,6 +76,7 @@ def _resolve_topic(topic_name: str) -> int:
         "logs": TOPIC_LOGS,
         "eua": TOPIC_EUA,
         "cripto": TOPIC_CRIPTO,
+        "brasil": TOPIC_BR,
     }
     return mapping.get(topic_name, TOPIC_LOGS)
 

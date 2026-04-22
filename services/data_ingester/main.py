@@ -38,10 +38,20 @@ def get_db():
             _time.sleep(5)
 
 
+def _get_yf_session():
+    import requests
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    })
+    return session
+
+
 def _download_history_yfinance(sym: str, period: str = "5y"):
     try:
         import yfinance as yf
-        df = yf.download(sym, period=period, interval="1d", progress=False, auto_adjust=True)
+        session = _get_yf_session()
+        df = yf.download(sym, period=period, interval="1d", progress=False, auto_adjust=True, session=session)
         if df.empty:
             return []
         rows = []

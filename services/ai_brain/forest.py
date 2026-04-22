@@ -11,10 +11,19 @@ try:
     from sklearn.preprocessing import StandardScaler
     import joblib
     import ta
+    import requests as _requests
     _DEPS_OK = True
 except ImportError:
     _DEPS_OK = False
     logger.warning("ForestEngine deps ausentes (yfinance/sklearn/ta). Modo passthrough ativo.")
+
+
+def _get_yf_session():
+    session = _requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    })
+    return session
 
 
 def _build_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -82,7 +91,7 @@ class ForestEngine:
                         logger.info(f"Baixando historico yfinance para {sym} (tentativa {attempt + 1}/3)...")
                         import time as _time
                         _time.sleep(2 + attempt * 3)
-                        df = yf.download(sym, period=f"{years}y", interval="1d", progress=False, auto_adjust=True)
+                        df = yf.download(sym, period=f"{years}y", interval="1d", progress=False, auto_adjust=True, session=_get_yf_session())
                         if df is not None and not df.empty:
                             break
                     except Exception as e:
