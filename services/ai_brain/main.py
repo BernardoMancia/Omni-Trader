@@ -315,11 +315,15 @@ class MarketEngine:
             self.forest.train(symbols=self.symbols, years=RF_TRAIN_YEARS)
 
     async def run_loop(self):
-        await self._initial_train()
         logger.info(f"{self._tag} Engine online | capital={self.currency}{self.capital:,.2f} | mode={TRADING_MODE}")
         await _notify_telegram(self.topic_thoughts,
             f"\U0001f9e0 <b>Omni-Trader {self.region}</b> online\n"
-            f"\U0001f4b0 {self.currency}{self.capital:,.2f} | {TRADING_MODE} | {len(self.symbols)} ativos"
+            f"\U0001f4b0 {self.currency}{self.capital:,.2f} | {TRADING_MODE} | {len(self.symbols)} ativos\n"
+            f"\U0001f504 Treinando modelo RF..."
+        )
+        await self._initial_train()
+        await _notify_telegram(self.topic_thoughts,
+            f"\u2705 <b>{self.region}</b> Modelo treinado | Engine pronta"
         )
 
         while True:
