@@ -17,6 +17,8 @@ DB_PARAMS = {
 IB_HOST = os.environ.get("IB_HOST", "ibgateway")
 IB_PORT = int(os.environ.get("IB_PORT", "4004"))
 US_SYMBOLS = os.environ.get("IBKR_SYMBOLS", "AAPL,MSFT,TSLA,SPY,QQQ,VOO").split(",")
+_br_raw = os.environ.get("BR_SYMBOLS", "")
+BR_SYMBOLS = [s.strip() for s in _br_raw.split(",") if s.strip()]
 CRYPTO_SYMBOLS = os.environ.get("CRYPTO_SYMBOLS", "btcusdt,ethusdt,bnbusdt").split(",")
 HISTORY_YEARS = int(os.environ.get("RF_TRAIN_YEARS", "5"))
 HISTORY_UPDATE_MINUTES = 10
@@ -97,7 +99,29 @@ async def run_history_fetcher():
         await asyncio.sleep(2)
 
     conn.close()
-    logger.info("Download inicial do histórico concluído.")
+    logger.info("Download inicial do historico US concluido.")
+
+
+async def run_history_fetcher_br():
+    if not BR_SYMBOLS:
+        logger.info("Sem ativos BR configurados, pulando.")
+        return
+    conn = get_db()
+    cursor = conn.cursor()
+    logger.info(f"Iniciando download BR ({HISTORY_YEARS}Y): {BR_SYMBOLS}")
+
+    for sym in BR_SYMBOLS:
+        rows = _download_history_yfinance(sym, f"{HISTORY_YEARS}y")
+        if rows:
+            cursor.executemany(INSERT_HIST, rows)
+            conn.commit()
+            logger.info(f"Historico BR {sym}: {len(rows)} candles salvos.")
+        else:
+            logger.error(f"Falha ao obter historico BR para {sym}.")
+        await asyncio.sleep(2)
+
+    conn.close()
+    logger.info("Download inicial do historico BR concluido.")
 
 
 async def run_history_updater():
@@ -122,6 +146,28 @@ async def run_history_updater():
         except Exception as e:
             logger.error(f"Erro no history updater: {e}")
 
+        await asyncio.sleep(HISTORY_UPDATE_MINUTES * 60)
+
+
+async def run_history_updater_br():
+    if not BR_SYMBOLS:
+        return
+    await asyncio.sleep(60)
+    while True:
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            logger.info("Atualizando historico BR...")
+            for sym in BR_SYMBOLS:
+                rows = _download_history_yfinance(sym, "5d")
+                if rows:
+                    cursor.executemany(INSERT_HIST, rows)
+                    conn.commit()
+                await asyncio.sleep(1)
+            conn.close()
+            logger.info(f"Historico BR atualizado. Proxima em {HISTORY_UPDATE_MINUTES}min.")
+        except Exception as e:
+            logger.error(f"Erro no BR history updater: {e}")
         await asyncio.sleep(HISTORY_UPDATE_MINUTES * 60)
 
 
@@ -192,13 +238,17 @@ async def run_ibkr_ingester():
 
 async def main():
     await run_history_fetcher()
+    await run_history_fetcher_br()
     while True:
         try:
-            await asyncio.gather(
+            tasks = [
                 run_binance_ingester(),
                 run_ibkr_ingester(),
                 run_history_updater(),
-            )
+            ]
+            if BR_SYMBOLS:
+                tasks.append(run_history_updater_br())
+            await asyncio.gather(*tasks)
         except Exception as e:
             logger.error(f"Ingester crash: {e}. Reiniciando em 10s...")
             await asyncio.sleep(10)

@@ -16,9 +16,6 @@ except ImportError:
     _DEPS_OK = False
     logger.warning("ForestEngine deps ausentes (yfinance/sklearn/ta). Modo passthrough ativo.")
 
-MODEL_PATH = os.environ.get("FOREST_MODEL_PATH", "/tmp/rf_model.joblib")
-SCALER_PATH = os.environ.get("FOREST_SCALER_PATH", "/tmp/rf_scaler.joblib")
-
 
 def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     close = df["Close"].squeeze()
@@ -49,24 +46,27 @@ class ForestEngine:
         "atr", "vol_ratio", "returns",
     ]
 
-    def __init__(self):
+    def __init__(self, model_prefix: str = "us"):
         self.model: RandomForestClassifier | None = None
         self.scaler: StandardScaler | None = None
+        self._prefix = model_prefix
+        self._model_path = f"/tmp/rf_model_{model_prefix}.joblib"
+        self._scaler_path = f"/tmp/rf_scaler_{model_prefix}.joblib"
         self._load_if_exists()
 
     def _load_if_exists(self):
         if not _DEPS_OK:
             return
-        if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
-            self.model = joblib.load(MODEL_PATH)
-            self.scaler = joblib.load(SCALER_PATH)
-            logger.info("RandomForest carregado do disco.")
+        if os.path.exists(self._model_path) and os.path.exists(self._scaler_path):
+            self.model = joblib.load(self._model_path)
+            self.scaler = joblib.load(self._scaler_path)
+            logger.info(f"RandomForest [{self._prefix.upper()}] carregado do disco.")
 
     def train(self, symbols: list[str], years: int = 5, data_map: dict[str, pd.DataFrame] | None = None) -> bool:
         if not _DEPS_OK:
             return False
-        
-        logger.info(f"Treinando RandomForest com {years} anos de histórico: {symbols}")
+
+        logger.info(f"Treinando RF [{self._prefix.upper()}] com {years} anos: {len(symbols)} ativos")
         frames = []
 
         for sym in symbols:
@@ -75,11 +75,11 @@ class ForestEngine:
                 df = data_map[sym]
                 if df is not None and not df.empty:
                     logger.debug(f"Usando dados do DB para {sym} ({len(df)} registros)")
-            
+
             if df is None or df.empty:
                 for attempt in range(3):
                     try:
-                        logger.info(f"Baixando histórico yfinance para {sym} (tentativa {attempt + 1}/3)...")
+                        logger.info(f"Baixando historico yfinance para {sym} (tentativa {attempt + 1}/3)...")
                         import time as _time
                         _time.sleep(2 + attempt * 3)
                         df = yf.download(sym, period=f"{years}y", interval="1d", progress=False, auto_adjust=True)
@@ -93,12 +93,12 @@ class ForestEngine:
             if df is not None and len(df) >= 200:
                 df = _build_features(df)
                 frames.append(df)
-                logger.info(f"✅ {sym}: {len(df)} amostras carregadas")
+                logger.info(f"\u2705 {sym}: {len(df)} amostras carregadas")
             else:
-                logger.warning(f"⚠️ Histórico insuficiente ou falha para {sym}")
+                logger.warning(f"\u26a0\ufe0f Historico insuficiente ou falha para {sym}")
 
         if not frames:
-            logger.error("Nenhum dado histórico disponível para treino.")
+            logger.error(f"Nenhum dado disponivel para treino [{self._prefix.upper()}].")
             return False
 
         data = pd.concat(frames).dropna()
@@ -116,13 +116,12 @@ class ForestEngine:
             random_state=42,
         )
         self.model.fit(X_scaled, y)
-        joblib.dump(self.model, MODEL_PATH)
-        joblib.dump(self.scaler, SCALER_PATH)
-        logger.info(f"RandomForest treinado com {len(data)} amostras. Salvo em disco.")
+        joblib.dump(self.model, self._model_path)
+        joblib.dump(self.scaler, self._scaler_path)
+        logger.info(f"RF [{self._prefix.upper()}] treinado com {len(data)} amostras. Salvo em disco.")
         return True
 
     def predict(self, feature_vector: np.ndarray) -> dict:
-        """Retorna {'signal': 'BUY'|'SELL'|'HOLD', 'confidence': float}"""
         if not _DEPS_OK or self.model is None or self.scaler is None:
             return {"signal": "HOLD", "confidence": 0.0, "source": "passthrough"}
         try:
@@ -135,7 +134,7 @@ class ForestEngine:
             confidence = float(proba[idx])
             return {"signal": signal, "confidence": round(confidence, 4), "source": "forest"}
         except Exception as e:
-            logger.error(f"Erro na predição do forest: {e}")
+            logger.error(f"Erro na predicao do forest [{self._prefix.upper()}]: {e}")
             return {"signal": "HOLD", "confidence": 0.0, "source": "error"}
 
     def is_ready(self) -> bool:
