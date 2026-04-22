@@ -530,12 +530,11 @@ async def main():
     tasks = [us_engine.run_loop()]
 
     if br_symbols:
-        br_topic = os.environ.get("TOPIC_BR", "brasil")
         br_engine = MarketEngine(
             region="BR", symbols=br_symbols, calendar_code="BVMF",
             tz_name="America/Sao_Paulo", currency="R$", capital=br_capital,
             sentiment_query=os.environ.get("SENTIMENT_QUERY_BR", "Brazil Bovespa economia mercado"),
-            topic_thoughts=br_topic, topic_invest="invest",
+            topic_thoughts="brasil", topic_invest="invest",
         )
         tasks.append(br_engine.run_loop())
 
