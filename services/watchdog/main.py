@@ -20,7 +20,7 @@ DB_PARAMS = {
     "password": os.environ["DB_PASSWORD"],
 }
 
-REGION_MAP = {"US": "IBKR (EUA)", "ASIA": "Binance (Cripto)"}
+REGION_MAP = {"US": "IBKR (EUA)", "ASIA": "Binance (Cripto)", "BR": "B3 (Brasil)"}
 
 def fire_alert(region: str):
     msg = (

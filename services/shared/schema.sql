@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS predictions (
     direction   TEXT              NOT NULL,
     confidence  DOUBLE PRECISION  NOT NULL,
     horizon_days INTEGER          NOT NULL DEFAULT 1,
-    source      TEXT              NOT NULL DEFAULT 'forest'
+    source      TEXT              NOT NULL DEFAULT 'forest',
+    region      TEXT              NOT NULL DEFAULT 'US'
 );
 SELECT create_hypertable('predictions', 'time', if_not_exists => TRUE);
 
@@ -41,14 +42,16 @@ CREATE TABLE IF NOT EXISTS ai_thoughts (
     rf_conf     DOUBLE PRECISION,
     ppo_action  TEXT,
     ppo_conf    DOUBLE PRECISION,
-    final_action TEXT             NOT NULL DEFAULT 'HOLD'
+    final_action TEXT             NOT NULL DEFAULT 'HOLD',
+    region      TEXT              NOT NULL DEFAULT 'US'
 );
 SELECT create_hypertable('ai_thoughts', 'time', if_not_exists => TRUE);
 
 CREATE TABLE IF NOT EXISTS sentiment_scores (
     time    TIMESTAMPTZ       NOT NULL DEFAULT NOW(),
     symbol  TEXT              NOT NULL,
-    score   DOUBLE PRECISION  NOT NULL
+    score   DOUBLE PRECISION  NOT NULL,
+    region  TEXT              NOT NULL DEFAULT 'US'
 );
 SELECT create_hypertable('sentiment_scores', 'time', if_not_exists => TRUE);
 

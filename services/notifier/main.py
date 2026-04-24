@@ -32,14 +32,7 @@ DB_PARAMS = {
 }
 INITIAL_CAPITAL_US = float(os.environ.get("INITIAL_CAPITAL_US", "10000"))
 
-TOPIC_MAP = {
-    "invest": "TOPIC_INVEST",
-    "thoughts": "TOPIC_THOUGHTS",
-    "results": "TOPIC_RESULTS",
-    "logs": "TOPIC_LOGS",
-    "eua": "TOPIC_EUA",
-    "cripto": "TOPIC_CRIPTO",
-}
+INITIAL_CAPITAL_BR = float(os.environ.get("INITIAL_CAPITAL_BR", "500"))
 
 app = FastAPI(title="Omni-Trader Notifier")
 
@@ -284,12 +277,13 @@ async def main():
     scheduler.add_job(send_performance_report, "cron", day_of_week="mon-fri", hour=20, minute=0, args=[TOPIC_RESULTS])
     scheduler.start()
 
-    logger.info("Notifier v2.0 online")
+    logger.info("Notifier v4.0 online")
     await tg_send(
-        f"🔋 <b>Omni-Trader v2.0 — ONLINE</b>\n"
+        f"🔋 <b>Omni-Trader v4.0 — ONLINE</b>\n"
         f"⏰ {boot_time}\n"
-        f"💼 Capital Base: ${INITIAL_CAPITAL_US:,.2f}\n"
-        f"📡 Streams: IBKR + Binance\n"
+        f"🇺🇸 Capital US: ${INITIAL_CAPITAL_US:,.2f}\n"
+        f"🇧🇷 Capital BR: R${INITIAL_CAPITAL_BR:,.2f}\n"
+        f"📡 Streams: IBKR + Binance + YFinance\n"
         f"🤖 IA: RandomForest + PPO + Sentimento\n"
         f"🛡️ Risco: 4 Estados (NORMAL→CAUTION→DEFENSIVE→RED)",
         TOPIC_LOGS,

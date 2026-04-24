@@ -125,9 +125,15 @@ class ForestEngine:
             random_state=42,
         )
         self.model.fit(X_scaled, y)
+
+        train_acc = self.model.score(X_scaled, y)
+        importances = self.model.feature_importances_
+        top_idx = np.argsort(importances)[-3:][::-1]
+        top_feats = ", ".join([f"{self.FEATURE_COLS[i]}={importances[i]:.3f}" for i in top_idx])
+
         joblib.dump(self.model, self._model_path)
         joblib.dump(self.scaler, self._scaler_path)
-        logger.info(f"RF [{self._prefix.upper()}] treinado com {len(data)} amostras. Salvo em disco.")
+        logger.info(f"RF [{self._prefix.upper()}] treinado: {len(data)} amostras | acc={train_acc:.2%} | top: {top_feats}")
         return True
 
     def predict(self, feature_vector: np.ndarray) -> dict:

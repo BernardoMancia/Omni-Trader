@@ -169,6 +169,7 @@ services:
       TOPIC_RESULTS: ${TOPIC_RESULTS}
       TOPIC_BR: ${TOPIC_BR:-0}
       INITIAL_CAPITAL_US: ${INITIAL_CAPITAL_US}
+      INITIAL_CAPITAL_BR: ${INITIAL_CAPITAL_BR:-500}
       TZ: America/Sao_Paulo
     volumes:
       - /etc/localtime:/etc/localtime:ro

@@ -140,7 +140,7 @@ def _compute_score(rf_decision: dict, ppo_decision: dict, sentiment_score: float
     rf_conf = rf_decision["confidence"]
     ppo_conf = ppo_decision["confidence"]
     consensus_bonus = 0.15 if rf_decision["signal"] == ppo_decision["action"] else 0.0
-    return (rf_conf * 0.4) + (ppo_conf * 0.6) + consensus_bonus + (sentiment_score * 0.1)
+    return (rf_conf * 0.7) + (ppo_conf * 0.2) + consensus_bonus + (sentiment_score * 0.1)
 
 
 class MarketEngine:
@@ -153,11 +153,15 @@ class MarketEngine:
         self.tz = pytz.timezone(tz_name)
         self.tz_name = tz_name
         self.currency = currency
+        self.initial_capital = capital
         self.capital = capital
         self.sentiment_query = sentiment_query
         self.topic_thoughts = topic_thoughts
         self.topic_invest = topic_invest
 
+        risk_pct = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
+        use_frac = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
+        self.risk = RiskManager(initial_capital=capital, region=region, risk_pct=risk_pct, use_fractional=use_frac)
         self.forest = ForestEngine(model_prefix=region.lower())
         self.ppo = PPOAgent(state_dim=9)
         self.sentiment = SentimentEngine()
@@ -212,9 +216,9 @@ class MarketEngine:
             rsi = float(features[0]) if features is not None else None
             macd = float(features[1]) if features is not None else None
             cursor.execute(
-                "INSERT INTO ai_thoughts (symbol, thought, rsi, macd, sentiment, rf_signal, rf_conf, ppo_action, ppo_conf, final_action) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (symbol, thought, rsi, macd, sentiment, rf["signal"], rf["confidence"], ppo["action"], ppo["confidence"], final_action)
+                "INSERT INTO ai_thoughts (symbol, thought, rsi, macd, sentiment, rf_signal, rf_conf, ppo_action, ppo_conf, final_action, region) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (symbol, thought, rsi, macd, sentiment, rf["signal"], rf["confidence"], ppo["action"], ppo["confidence"], final_action, self.region)
             )
             conn.commit()
         except Exception:
@@ -223,8 +227,8 @@ class MarketEngine:
     def _save_prediction(self, cursor, conn, symbol, direction, confidence, source):
         try:
             cursor.execute(
-                "INSERT INTO predictions (symbol, direction, confidence, horizon_days, source) VALUES (%s, %s, %s, %s, %s)",
-                (symbol, direction, confidence, 1, source)
+                "INSERT INTO predictions (symbol, direction, confidence, horizon_days, source, region) VALUES (%s, %s, %s, %s, %s, %s)",
+                (symbol, direction, confidence, 1, source, self.region)
             )
             conn.commit()
         except Exception:
@@ -257,16 +261,29 @@ class MarketEngine:
 
     def _log_sentiment(self, cursor, conn, symbol, score):
         try:
-            cursor.execute("INSERT INTO sentiment_scores (symbol, score) VALUES (%s, %s)", (symbol, score))
+            cursor.execute("INSERT INTO sentiment_scores (symbol, score, region) VALUES (%s, %s, %s)", (symbol, score, self.region))
             conn.commit()
         except Exception:
             conn.rollback()
+
+    def _sync_capital(self, cursor):
+        try:
+            cursor.execute(
+                "SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN -quantity*COALESCE(price,0) ELSE quantity*COALESCE(price,0) END), 0) "
+                "FROM trade_logs WHERE region=%s AND is_deleted=FALSE",
+                (self.region,)
+            )
+            pnl = float(cursor.fetchone()[0] or 0)
+            self.capital = self.initial_capital + pnl
+            self.risk.update_state(self.capital)
+        except Exception as e:
+            logger.warning(f"{self._tag} Erro ao sincronizar capital: {e}")
 
     def _update_system_state(self, cursor, conn):
         try:
             cursor.execute(
                 "INSERT INTO system_states (region, state, drawdown, max_drawdown, capital_ref) VALUES (%s, %s, %s, %s, %s)",
-                (self.region, "NORMAL", 0.0, 0.0, self.capital)
+                (self.region, self.risk.state.name, self.risk.get_drawdown(), self.risk.max_drawdown, self.capital)
             )
             conn.commit()
         except Exception:
@@ -374,7 +391,16 @@ class MarketEngine:
                     self.last_retrain_day = now.date()
 
                 sentiment_score = self.sentiment.analyze(self.sentiment_query)
-                is_defensive = sentiment_score < DEFENSIVE_THRESHOLD
+                self.risk.update_state(self.capital, sentiment_score)
+
+                if self.risk.state == MarketState.RED:
+                    await _notify_telegram(self.topic_thoughts,
+                        f"\U0001f6a8 <b>{self.region} HARD-STOP ATIVADO</b>\n"
+                        f"Drawdown: {self.risk.get_drawdown():.2f}% | Shadow Mode"
+                    )
+                    await asyncio.sleep(SLEEP_OUTSIDE_MARKET)
+                    conn.close()
+                    continue
 
                 thoughts_batch = []
                 executed_trades = []
@@ -390,17 +416,11 @@ class MarketEngine:
                     self._save_prediction(cursor, conn, symbol, rf_decision["signal"], rf_decision["confidence"], "forest")
                     self._save_prediction(cursor, conn, symbol, ppo_decision["action"], ppo_decision["confidence"], "ppo")
 
-                    consensus = rf_decision["signal"] == ppo_decision["action"]
-                    strong = (
-                        consensus
-                        and ppo_decision["confidence"] >= PPO_CONFIDENCE_MIN
-                        and rf_decision["confidence"] >= 0.55
-                        and ppo_decision["action"] in ("BUY", "SELL")
-                    )
-
                     score = _compute_score(rf_decision, ppo_decision, sentiment_score)
-                    desired_action = ppo_decision["action"]
+                    desired_action = rf_decision["signal"]
                     final_action = "HOLD"
+
+                    rf_strong = rf_decision["confidence"] >= 0.55 and desired_action in ("BUY", "SELL")
 
                     if desired_action == "SELL":
                         position = self._get_position(cursor, symbol)
@@ -412,44 +432,46 @@ class MarketEngine:
                             self._log_sentiment(cursor, conn, symbol, sentiment_score)
                             continue
 
-                    if strong and not is_defensive:
+                    if rf_strong and desired_action == "BUY" and not self.risk.is_buy_allowed():
+                        final_action = f"HOLD ({self.risk.state.name})"
+                    elif rf_strong and desired_action == "SELL" and not self.risk.is_sell_allowed():
+                        final_action = f"HOLD ({self.risk.state.name})"
+                    elif rf_strong:
                         final_action = desired_action
-                        region_query = self.region
                         cursor.execute(
                             "SELECT bid, ask FROM market_data WHERE symbol=%s AND region=%s ORDER BY time DESC LIMIT 1",
-                            (symbol, region_query)
+                            (symbol, self.region)
                         )
                         price_row = cursor.fetchone()
                         if price_row and price_row[0] and price_row[1]:
                             mid_price = (price_row[0] + price_row[1]) / 2.0
-                            use_fractional = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
-                            risk_pct = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
 
                             if desired_action == "BUY":
-                                quantity = (self.capital * risk_pct) / mid_price if use_fractional else max(1, int((self.capital * risk_pct) / mid_price))
+                                quantity = self.risk.get_position_size(mid_price)
                             else:
                                 position = self._get_position(cursor, symbol)
-                                quantity = min(position, (self.capital * risk_pct) / mid_price) if use_fractional else min(position, max(1, int((self.capital * risk_pct) / mid_price)))
+                                risk_qty = self.risk.get_position_size(mid_price)
+                                quantity = min(position, risk_qty) if risk_qty > 0 else position
                                 quantity = max(0.0001, quantity)
 
-                            self._log_trade(cursor, conn, symbol, final_action, quantity, mid_price)
-                            await _send_order(symbol, final_action, quantity, use_fractional, self.capital, self.region)
+                            if quantity > 0:
+                                self._log_trade(cursor, conn, symbol, final_action, quantity, mid_price)
+                                await _send_order(symbol, final_action, quantity, self.risk.use_fractional, self.capital, self.region)
 
-                            executed_trades.append({
-                                "symbol": symbol, "action": final_action,
-                                "quantity": quantity, "price": mid_price, "score": score,
-                            })
-                            final_action = f"\u2705 {final_action}"
-                    elif strong and not is_defensive and not market_open:
-                        final_action = f"SINAL {desired_action}"
-                    elif strong and is_defensive:
-                        final_action = "HOLD (defensivo)"
+                                executed_trades.append({
+                                    "symbol": symbol, "action": final_action,
+                                    "quantity": quantity, "price": mid_price, "score": score,
+                                })
+                                final_action = f"\u2705 {final_action}"
+                            else:
+                                final_action = "HOLD (qty=0)"
 
                     thought = self._build_thought(symbol, features, sentiment_score, rf_decision, ppo_decision, final_action, score)
                     self._save_thought(cursor, conn, symbol, thought, features, sentiment_score, rf_decision, ppo_decision, final_action)
                     thoughts_batch.append(thought)
                     self._log_sentiment(cursor, conn, symbol, sentiment_score)
 
+                self._sync_capital(cursor)
                 self._update_system_state(cursor, conn)
 
                 if thoughts_batch:
@@ -465,6 +487,8 @@ class MarketEngine:
                     else:
                         sent_tag = "\U0001f534 Defensivo"
 
+                    risk_tag = {"NORMAL": "\U0001f7e2", "CAUTION": "\U0001f7e1", "DEFENSIVE": "\U0001f7e0", "RED": "\U0001f534"}.get(self.risk.state.name, "\u26aa")
+                    dd = self.risk.get_drawdown()
                     sep_thick = "\u2501" * 42
                     sep_thin = "\u2500" * 42
                     flag = "\U0001f1fa\U0001f1f8" if self.region == "US" else "\U0001f1e7\U0001f1f7"
@@ -472,6 +496,7 @@ class MarketEngine:
                     lines = [
                         f"\U0001f9e0 <b>OMNI-TRADER {flag} {self.region}</b>",
                         f"\U0001f552 {br_str} ({local_str} local) \u2502 \U0001f7e2 ABERTO",
+                        f"\U0001f4b0 {self.currency}{self.capital:,.2f} \u2502 {risk_tag} {self.risk.state.name} \u2502 DD: {dd:+.1f}%",
                         f"\U0001f30d Sent: <b>{sentiment_score:.2f}</b> {sent_tag} \u2502 \U0001f4cb {len(thoughts_batch)} ativos",
                         sep_thick,
                         f"\U0001f4dd    ATIVO   \u2502  RSI  \u2502MACD\u2502\u25b2\u25bc\u2502  RF  \u2502  PPO \u2502 ACAO",
@@ -491,7 +516,7 @@ class MarketEngine:
                     else:
                         lines.append(f"\n\U0001f7e1 Nenhum trade neste ciclo")
 
-                    lines.append(f"\n\U0001f916 <i>Omni-Trader v3.0 {flag} {TRADING_MODE}</i>")
+                    lines.append(f"\n\U0001f916 <i>Omni-Trader v4.0 {flag} {TRADING_MODE}</i>")
 
                     await _notify_telegram(self.topic_thoughts, "\n".join(lines))
 
@@ -512,6 +537,10 @@ class MarketEngine:
 
             except Exception as e:
                 logger.error(f"{self._tag} Loop error: {e}")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
             await asyncio.sleep(LOOP_INTERVAL)
 
@@ -542,7 +571,7 @@ async def main():
         )
         tasks.append(br_engine.run_loop())
 
-    logger.info(f"Omni-Trader v3.0 | US={len(us_symbols)} ativos | BR={len(br_symbols)} ativos")
+    logger.info(f"Omni-Trader v4.0 | US={len(us_symbols)} ativos | BR={len(br_symbols)} ativos")
     await asyncio.gather(*tasks)
 
 
