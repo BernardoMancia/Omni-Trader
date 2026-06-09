@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import json
+import random
 import time as _time_module
 from psycopg2.extras import execute_values
 from ib_insync import IB, Stock, util
@@ -21,6 +22,7 @@ HISTORY_UPDATE_MINUTES = 10
 INSERT_TICK = "INSERT INTO market_data (symbol, bid, ask, region) VALUES (%s, %s, %s, %s)"
 INSERT_TICK_BATCH = "INSERT INTO market_data (symbol, bid, ask, region) VALUES %s"
 INSERT_HIST = "INSERT INTO price_history (symbol, date, open, high, low, close, volume) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (symbol, date) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume"
+INSERT_HIST_BATCH = "INSERT INTO price_history (symbol, date, open, high, low, close, volume) VALUES %s ON CONFLICT (symbol, date) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume"
 TICK_BATCH_SIZE = 100
 TICK_FLUSH_INTERVAL = 1.0  # seconds
 
@@ -47,10 +49,15 @@ def _flush_ticks(cursor, conn, buffer: list) -> None:
         raise
 
 
-def _reconnect_db():
+def _reconnect_db(old_conn=None):
     """Re-establish DB connection and cursor from pool after a failure."""
-    logger.info("Reconectando ao banco de dados...")
     pool = get_pool()
+    if old_conn is not None:
+        try:
+            pool.putconn(old_conn, close=True)
+        except Exception:
+            pass
+    logger.info("Reconectando ao banco de dados...")
     conn = pool.getconn()
     cursor = conn.cursor()
     return conn, cursor
@@ -80,7 +87,6 @@ def _download_history_yfinance(sym: str, period: str = "5y"):
 
 
 async def _fetch_from_ibkr(sym: str, years: int):
-    import random
     ib = IB()
     try:
         client_id = random.randint(30000, 39999)
@@ -109,7 +115,7 @@ async def run_history_fetcher():
             if not rows:
                 rows = await _fetch_from_ibkr(sym, HISTORY_YEARS)
             if rows:
-                cursor.executemany(INSERT_HIST, rows)
+                execute_values(cursor, INSERT_HIST_BATCH, rows)
                 conn.commit()
                 logger.info(f"Histórico {sym}: {len(rows)} candles salvos.")
             else:
@@ -128,7 +134,7 @@ async def run_history_fetcher_br():
         for sym in BR_SYMBOLS:
             rows = _download_history_yfinance(sym, f"{HISTORY_YEARS}y")
             if rows:
-                cursor.executemany(INSERT_HIST, rows)
+                execute_values(cursor, INSERT_HIST_BATCH, rows)
                 conn.commit()
                 logger.info(f"Historico BR {sym}: {len(rows)} candles salvos.")
             else:
@@ -147,7 +153,7 @@ async def run_history_updater():
                 for sym in US_SYMBOLS:
                     rows = _download_history_yfinance(sym, "5d")
                     if rows:
-                        cursor.executemany(INSERT_HIST, rows)
+                        execute_values(cursor, INSERT_HIST_BATCH, rows)
                         conn.commit()
                         logger.debug(f"Histórico {sym} atualizado: {len(rows)} candles.")
                     await asyncio.sleep(1)
@@ -170,7 +176,7 @@ async def run_history_updater_br():
                 for sym in BR_SYMBOLS:
                     rows = _download_history_yfinance(sym, "5d")
                     if rows:
-                        cursor.executemany(INSERT_HIST, rows)
+                        execute_values(cursor, INSERT_HIST_BATCH, rows)
                         conn.commit()
                     await asyncio.sleep(1)
                 logger.info(f"Historico BR atualizado. Proxima em {HISTORY_UPDATE_MINUTES}min.")
@@ -208,7 +214,7 @@ async def run_binance_ingester():
                         try:
                             _flush_ticks(cursor, conn, tick_buffer)
                         except Exception:
-                            conn, cursor = _reconnect_db()
+                            conn, cursor = _reconnect_db(conn)
                             _flush_ticks(cursor, conn, tick_buffer)
                         tick_buffer.clear()
                         last_flush = now
@@ -219,7 +225,7 @@ async def run_binance_ingester():
                     _flush_ticks(cursor, conn, tick_buffer)
                 except Exception:
                     try:
-                        conn, cursor = _reconnect_db()
+                        conn, cursor = _reconnect_db(conn)
                         _flush_ticks(cursor, conn, tick_buffer)
                     except Exception as flush_err:
                         logger.error(f"Perda de {len(tick_buffer)} ticks no flush de emergência: {flush_err}")
@@ -238,7 +244,7 @@ async def run_ibkr_ingester():
 
     while True:
         try:
-            import random
+
             client_id = random.randint(20000, 29999)
             await ib.connectAsync(IB_HOST, IB_PORT, clientId=client_id, timeout=30)
             logger.info(f"IBKR ingester conectado em {IB_HOST}:{IB_PORT}")
@@ -268,7 +274,7 @@ async def run_ibkr_ingester():
             try:
                 _flush_ticks(cursor, conn, tick_buffer)
             except Exception:
-                conn, cursor = _reconnect_db()
+                conn, cursor = _reconnect_db(conn)
                 try:
                     _flush_ticks(cursor, conn, tick_buffer)
                 except Exception as flush_err:
@@ -277,6 +283,8 @@ async def run_ibkr_ingester():
             last_flush = now
 
     logger.error("IBKR ingester desconectado. Retornando para reinício pelo supervisor.")
+    pool = get_pool()
+    pool.putconn(conn)
     return
 
 

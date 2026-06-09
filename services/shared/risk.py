@@ -1,3 +1,4 @@
+import os
 from enum import Enum
 import logging
 
@@ -16,7 +17,7 @@ RISK_SCALE = {
     MarketState.RED: 0.0,
 }
 
-MAX_SINGLE_POSITION_PCT = 0.20
+MAX_SINGLE_POSITION_PCT = float(os.environ.get("MAX_SINGLE_POSITION_PCT", "0.20"))
 
 
 class RiskManager:

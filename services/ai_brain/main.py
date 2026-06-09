@@ -4,6 +4,7 @@ import logging
 import numpy as np
 import pandas as pd
 from services.shared.db import get_pool, get_conn
+from services.shared import VERSION
 import httpx
 import pytz
 from datetime import datetime, timezone
@@ -17,6 +18,12 @@ try:
 except Exception:
     _XCALS_OK = False
 
+try:
+    import ta
+    _TA_OK = True
+except ImportError:
+    _TA_OK = False
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("AIBrain")
 
@@ -25,7 +32,7 @@ ROUTER_URL = os.environ.get("ROUTER_URL", "http://router:28000/order")
 NOTIFIER_URL = os.environ.get("NOTIFIER_URL", "http://notifier:8001/notify")
 LOOP_INTERVAL = int(os.environ.get("BRAIN_LOOP_INTERVAL", "15"))
 SLEEP_OUTSIDE_MARKET = int(os.environ.get("SLEEP_OUTSIDE_MARKET", "300"))
-DEFENSIVE_THRESHOLD = float(os.environ.get("DEFENSIVE_THRESHOLD", "0.3"))
+
 RF_TRAIN_YEARS = int(os.environ.get("RF_TRAIN_YEARS", "5"))
 TRADING_MODE = os.environ.get("IB_TRADING_MODE", "paper").upper()
 
@@ -34,6 +41,8 @@ TRADING_MODE = os.environ.get("IB_TRADING_MODE", "paper").upper()
 
 
 def _fetch_latest_features(cursor, symbol: str) -> np.ndarray | None:
+    if not _TA_OK:
+        return None
     try:
         cursor.execute(
             "SELECT open, high, low, close, volume FROM price_history "
@@ -43,8 +52,6 @@ def _fetch_latest_features(cursor, symbol: str) -> np.ndarray | None:
         rows = cursor.fetchall()
         if len(rows) < 50:
             return None
-
-        import ta
         cols = ["Open", "High", "Low", "Close", "Volume"]
         df = pd.DataFrame(rows[::-1], columns=cols)
         close = df["Close"].astype(float)
@@ -300,6 +307,7 @@ class MarketEngine:
 
         while True:
             conn = None
+            pool = None
             try:
                 market_open = self.is_market_open()
                 local_time = self._local_time()
@@ -387,8 +395,7 @@ class MarketEngine:
 
                     if rf_strong and desired_action == "BUY" and not self.risk.is_buy_allowed():
                         final_action = f"HOLD ({self.risk.state.name})"
-                    elif rf_strong and desired_action == "SELL" and not self.risk.is_sell_allowed():
-                        final_action = f"HOLD ({self.risk.state.name})"
+
                     elif rf_strong:
                         final_action = desired_action
                         cursor.execute(
@@ -469,7 +476,7 @@ class MarketEngine:
                     else:
                         lines.append(f"\n\U0001f7e1 Nenhum trade neste ciclo")
 
-                    lines.append(f"\n\U0001f916 <i>Omni-Trader v5.0 {flag} {TRADING_MODE}</i>")
+                    lines.append(f"\n\U0001f916 <i>Omni-Trader v{VERSION} {flag} {TRADING_MODE}</i>")
 
                     await _notify_telegram(self.topic_thoughts, "\n".join(lines))
 
@@ -488,7 +495,7 @@ class MarketEngine:
             except Exception as e:
                 logger.error(f"{self._tag} Loop error: {e}")
             finally:
-                if conn is not None:
+                if conn is not None and pool is not None:
                     try:
                         pool.putconn(conn)
                     except Exception:
@@ -523,7 +530,7 @@ async def main():
         )
         tasks.append(br_engine.run_loop())
 
-    logger.info(f"Omni-Trader v4.0 | US={len(us_symbols)} ativos | BR={len(br_symbols)} ativos")
+    logger.info(f"Omni-Trader v{VERSION} | US={len(us_symbols)} ativos | BR={len(br_symbols)} ativos")
     await asyncio.gather(*tasks)
 
 

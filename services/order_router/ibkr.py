@@ -85,10 +85,6 @@ class IBKRRouter:
             logger.warning(f"BUY bloqueado por RiskManager (state={self.risk.state.name})")
             return {"status": "blocked", "reason": self.risk.state.name}
 
-        if side == "SELL" and not self.risk.is_sell_allowed():
-            logger.warning(f"SELL bloqueado por RiskManager (state={self.risk.state.name})")
-            return {"status": "blocked", "reason": self.risk.state.name}
-
         real_equity = equity or self._get_equity()
         self.risk.update_state(real_equity)
 

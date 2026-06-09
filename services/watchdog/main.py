@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger("Watchdog")
 
 NOTIFIER_URL = os.environ.get("NOTIFIER_URL", "http://notifier:8001/notify")
-SILENCE_MINUTES = 10
+SILENCE_MINUTES = int(os.environ.get("WATCHDOG_SILENCE_MINUTES", "10"))
 
 REGION_MAP = {"US": "IBKR (EUA)", "ASIA": "Binance (Cripto)", "BR": "B3 (Brasil)"}
 

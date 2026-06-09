@@ -9,6 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from pydantic import BaseModel
 from services.shared.db import get_conn, close_pool
+from services.shared import VERSION
 import uvicorn
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -83,6 +84,11 @@ async def notify_endpoint(req: NotifyRequest):
     thread_id = _resolve_topic(req.topic)
     await tg_send(req.text, thread_id)
     return {"status": "sent", "topic": req.topic, "thread_id": thread_id}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": "notifier"}
 
 
 def get_exchange_rate() -> float:
@@ -274,9 +280,9 @@ async def main():
     scheduler.add_job(send_performance_report, "cron", day_of_week="mon-fri", hour=20, minute=0, args=[TOPIC_RESULTS])
     scheduler.start()
 
-    logger.info("Notifier v4.0 online")
+    logger.info(f"Notifier v{VERSION} online")
     await tg_send(
-        f"🔋 <b>Omni-Trader v4.0 — ONLINE</b>\n"
+        f"🔋 <b>Omni-Trader v{VERSION} — ONLINE</b>\n"
         f"⏰ {boot_time}\n"
         f"🇺🇸 Capital US: ${INITIAL_CAPITAL_US:,.2f}\n"
         f"🇧🇷 Capital BR: R${INITIAL_CAPITAL_BR:,.2f}\n"

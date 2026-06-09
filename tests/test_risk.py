@@ -27,8 +27,8 @@ def test_fee_viability():
 
 def test_defensive_mode():
     rm = RiskManager(initial_capital=10000.0, region="US")
-    state = rm.update_state(10000.0, sentiment_score=0.35)
-    assert state == MarketState.DEFENSIVE, f"sentimento 0.35 deve → DEFENSIVE, got {state}"
+    state = rm.update_state(10000.0, sentiment_score=0.30)
+    assert state == MarketState.DEFENSIVE, f"sentimento 0.30 deve → DEFENSIVE (< 0.35), got {state}"
     assert not rm.is_buy_allowed(), "BUY deve ser bloqueado em DEFENSIVE"
     assert rm.is_sell_allowed(), "SELL deve ser permitido em DEFENSIVE"
 
@@ -39,7 +39,7 @@ def test_risk_red_mode():
     assert rm.state == MarketState.RED
     assert rm.get_position_size(100.0) == 0
     assert not rm.is_buy_allowed()
-    assert not rm.is_sell_allowed()
+    assert rm.is_sell_allowed()  # Sells always allowed for liquidation
 
 
 def test_max_drawdown_tracking():

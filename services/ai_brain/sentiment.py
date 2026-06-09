@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import hashlib
+import re
 
 logger = logging.getLogger("SentimentEngine")
 
@@ -61,7 +62,7 @@ class SentimentEngine:
             try:
                 rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={query.replace(' ','%20')}&region=US&lang=en-US"
                 r = httpx.get(rss_url, timeout=8)
-                import re
+
                 titles = re.findall(r"<title><!\[CDATA\[(.*?)\]\]></title>", r.text)
                 headlines = titles[:20]
             except Exception as e:

@@ -1,5 +1,6 @@
 import os
 import logging
+import time as _time
 import numpy as np
 import pandas as pd
 
@@ -52,8 +53,10 @@ class ForestEngine:
         self.model: RandomForestClassifier | None = None
         self.scaler: StandardScaler | None = None
         self._prefix = model_prefix
-        self._model_path = f"/tmp/rf_model_{model_prefix}.joblib"
-        self._scaler_path = f"/tmp/rf_scaler_{model_prefix}.joblib"
+        _model_dir = os.environ.get("MODEL_DIR", "/app/models")
+        os.makedirs(_model_dir, exist_ok=True)
+        self._model_path = os.path.join(_model_dir, f"rf_model_{model_prefix}.joblib")
+        self._scaler_path = os.path.join(_model_dir, f"rf_scaler_{model_prefix}.joblib")
         self._load_if_exists()
 
     def _load_if_exists(self):
@@ -82,7 +85,7 @@ class ForestEngine:
                 for attempt in range(3):
                     try:
                         logger.info(f"Baixando historico yfinance para {sym} (tentativa {attempt + 1}/3)...")
-                        import time as _time
+
                         _time.sleep(2 + attempt * 3)
                         df = yf.download(sym, period=f"{years}y", interval="1d", progress=False, auto_adjust=True, session=get_yf_session())
                         if df is not None and not df.empty:
