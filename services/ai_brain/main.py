@@ -3,7 +3,7 @@ import asyncio
 import logging
 import numpy as np
 import pandas as pd
-import psycopg2
+from services.shared.db import get_pool, get_conn
 import httpx
 import pytz
 from datetime import datetime, timezone
@@ -20,11 +20,7 @@ except Exception:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("AIBrain")
 
-DB_PARAMS = {
-    "host": os.environ["DB_HOST"], "port": os.environ["DB_PORT"],
-    "dbname": os.environ["DB_NAME"], "user": os.environ["DB_USER"],
-    "password": os.environ["DB_PASSWORD"],
-}
+
 ROUTER_URL = os.environ.get("ROUTER_URL", "http://router:28000/order")
 NOTIFIER_URL = os.environ.get("NOTIFIER_URL", "http://notifier:8001/notify")
 LOOP_INTERVAL = int(os.environ.get("BRAIN_LOOP_INTERVAL", "15"))
@@ -257,12 +253,11 @@ class MarketEngine:
         logger.info(f"{self._tag} Aguardando dados para treino...")
         for _ in range(30):
             try:
-                conn = psycopg2.connect(**DB_PARAMS)
-                cur = conn.cursor()
-                sym_list = ",".join([f"'{s}'" for s in self.symbols])
-                cur.execute(f"SELECT COUNT(*) FROM price_history WHERE symbol IN ({sym_list})")
-                count = cur.fetchone()[0]
-                conn.close()
+                with get_conn() as conn:
+                    cur = conn.cursor()
+                    sym_list = ",".join([f"'{s}'" for s in self.symbols])
+                    cur.execute(f"SELECT COUNT(*) FROM price_history WHERE symbol IN ({sym_list})")
+                    count = cur.fetchone()[0]
                 if count >= 100:
                     break
             except Exception:
@@ -270,21 +265,20 @@ class MarketEngine:
             await asyncio.sleep(10)
 
         try:
-            conn = psycopg2.connect(**DB_PARAMS)
-            cur = conn.cursor()
-            db_data = {}
-            for sym in self.symbols:
-                cur.execute(
-                    'SELECT date as "Date", open as "Open", high as "High", low as "Low", close as "Close", volume as "Volume" '
-                    "FROM price_history WHERE symbol=%s ORDER BY date ASC", (sym,)
-                )
-                rows = cur.fetchall()
-                if rows:
-                    df = pd.DataFrame(rows, columns=["Date", "Open", "High", "Low", "Close", "Volume"])
-                    df.set_index("Date", inplace=True)
-                    db_data[sym] = df
-                    logger.info(f"{self._tag} {sym}: {len(df)} registros do DB")
-            conn.close()
+            with get_conn() as conn:
+                cur = conn.cursor()
+                db_data = {}
+                for sym in self.symbols:
+                    cur.execute(
+                        'SELECT date as "Date", open as "Open", high as "High", low as "Low", close as "Close", volume as "Volume" '
+                        "FROM price_history WHERE symbol=%s ORDER BY date ASC", (sym,)
+                    )
+                    rows = cur.fetchall()
+                    if rows:
+                        df = pd.DataFrame(rows, columns=["Date", "Open", "High", "Low", "Close", "Volume"])
+                        df.set_index("Date", inplace=True)
+                        db_data[sym] = df
+                        logger.info(f"{self._tag} {sym}: {len(df)} registros do DB")
             if db_data:
                 self.forest.train(symbols=self.symbols, years=RF_TRAIN_YEARS, data_map=db_data)
             else:
@@ -334,7 +328,8 @@ class MarketEngine:
                     await asyncio.sleep(SLEEP_OUTSIDE_MARKET)
                     continue
 
-                conn = psycopg2.connect(**DB_PARAMS)
+                pool = get_pool()
+                conn = pool.getconn()
                 cursor = conn.cursor()
 
                 if self.last_retrain_day != now.date() and now.hour >= 6:
@@ -361,7 +356,7 @@ class MarketEngine:
                         f"Drawdown: {self.risk.get_drawdown():.2f}% | Shadow Mode"
                     )
                     await asyncio.sleep(SLEEP_OUTSIDE_MARKET)
-                    conn.close()
+                    pool.putconn(conn)
                     continue
 
                 thoughts_batch = []
@@ -491,12 +486,12 @@ class MarketEngine:
                         )
                         await _notify_telegram(self.topic_invest, invest_msg)
 
-                conn.close()
+                pool.putconn(conn)
 
             except Exception as e:
                 logger.error(f"{self._tag} Loop error: {e}")
                 try:
-                    conn.close()
+                    pool.putconn(conn)
                 except Exception:
                     pass
 

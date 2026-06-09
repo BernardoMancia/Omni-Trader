@@ -90,7 +90,6 @@ services:
       BR_SYMBOLS: ${BR_SYMBOLS:-}
       RF_TRAIN_YEARS: ${RF_TRAIN_YEARS}
       BRAIN_LOOP_INTERVAL: ${BRAIN_LOOP_INTERVAL}
-      PPO_CONFIDENCE_MIN: ${PPO_CONFIDENCE_MIN}
       DEFENSIVE_THRESHOLD: ${DEFENSIVE_THRESHOLD:-0.3}
       SENTIMENT_QUERY: ${SENTIMENT_QUERY}
       SENTIMENT_QUERY_BR: ${SENTIMENT_QUERY_BR:-Brazil Bovespa economia mercado}
@@ -107,7 +106,7 @@ services:
       - rf_models:/tmp
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
-    mem_limit: 1g
+    mem_limit: 512m
 
   router:
     build:
@@ -141,6 +140,11 @@ services:
       - /etc/timezone:/etc/timezone:ro
     ports:
       - "28000:28000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:28000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     mem_limit: 700m
 
   notifier:
@@ -174,6 +178,11 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     mem_limit: 400m
 
   watchdog:
@@ -185,6 +194,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      notifier:
+        condition: service_started
     environment:
       SERVICE_NAME: watchdog
       DB_HOST: db
@@ -192,9 +203,7 @@ services:
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
-      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
-      CHAT_ID: ${CHAT_ID}
-      TOPIC_LOGS: ${TOPIC_LOGS}
+      NOTIFIER_URL: http://notifier:8001/notify
       TZ: America/Sao_Paulo
     volumes:
       - /etc/localtime:/etc/localtime:ro

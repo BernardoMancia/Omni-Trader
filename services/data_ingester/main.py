@@ -3,19 +3,13 @@ import asyncio
 import logging
 import json
 import time as _time_module
-import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime
 from ib_insync import IB, Stock, util
+from services.shared.db import get_conn, get_pool
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("DataIngester")
-
-DB_PARAMS = {
-    "host": os.environ["DB_HOST"], "port": os.environ["DB_PORT"],
-    "dbname": os.environ["DB_NAME"], "user": os.environ["DB_USER"],
-    "password": os.environ["DB_PASSWORD"],
-}
 IB_HOST = os.environ.get("IB_HOST", "ibgateway")
 IB_PORT = int(os.environ.get("IB_PORT", "4004"))
 US_SYMBOLS = os.environ.get("IBKR_SYMBOLS", "AAPL,MSFT,TSLA,SPY,QQQ,VOO").split(",")
@@ -32,14 +26,9 @@ TICK_FLUSH_INTERVAL = 1.0  # seconds
 
 
 def get_db():
-    while True:
-        try:
-            conn = psycopg2.connect(**DB_PARAMS)
-            logger.info("Database conectado.")
-            return conn
-        except Exception as e:
-            logger.error(f"DB connect falhou: {e}. Retry em 5s...")
-            _time_module.sleep(5)
+    """Get a raw connection from the shared pool."""
+    pool = get_pool()
+    return pool.getconn()
 
 
 def _flush_ticks(cursor, conn, buffer: list) -> None:
@@ -59,9 +48,10 @@ def _flush_ticks(cursor, conn, buffer: list) -> None:
 
 
 def _reconnect_db():
-    """Re-establish DB connection and cursor after a failure."""
+    """Re-establish DB connection and cursor from pool after a failure."""
     logger.info("Reconectando ao banco de dados...")
-    conn = get_db()
+    pool = get_pool()
+    conn = pool.getconn()
     cursor = conn.cursor()
     return conn, cursor
 
@@ -120,23 +110,20 @@ async def _fetch_from_ibkr(sym: str, years: int):
 
 
 async def run_history_fetcher():
-    conn = get_db()
-    cursor = conn.cursor()
-    logger.info(f"Iniciando download do histórico completo ({HISTORY_YEARS}Y): {US_SYMBOLS}")
-
-    for sym in US_SYMBOLS:
-        rows = _download_history_yfinance(sym, f"{HISTORY_YEARS}y")
-        if not rows:
-            rows = await _fetch_from_ibkr(sym, HISTORY_YEARS)
-        if rows:
-            cursor.executemany(INSERT_HIST, rows)
-            conn.commit()
-            logger.info(f"Histórico {sym}: {len(rows)} candles salvos.")
-        else:
-            logger.error(f"Falha total ao obter histórico para {sym}.")
-        await asyncio.sleep(2)
-
-    conn.close()
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        logger.info(f"Iniciando download do histórico completo ({HISTORY_YEARS}Y): {US_SYMBOLS}")
+        for sym in US_SYMBOLS:
+            rows = _download_history_yfinance(sym, f"{HISTORY_YEARS}y")
+            if not rows:
+                rows = await _fetch_from_ibkr(sym, HISTORY_YEARS)
+            if rows:
+                cursor.executemany(INSERT_HIST, rows)
+                conn.commit()
+                logger.info(f"Histórico {sym}: {len(rows)} candles salvos.")
+            else:
+                logger.error(f"Falha total ao obter histórico para {sym}.")
+            await asyncio.sleep(2)
     logger.info("Download inicial do historico US concluido.")
 
 
@@ -144,21 +131,18 @@ async def run_history_fetcher_br():
     if not BR_SYMBOLS:
         logger.info("Sem ativos BR configurados, pulando.")
         return
-    conn = get_db()
-    cursor = conn.cursor()
-    logger.info(f"Iniciando download BR ({HISTORY_YEARS}Y): {BR_SYMBOLS}")
-
-    for sym in BR_SYMBOLS:
-        rows = _download_history_yfinance(sym, f"{HISTORY_YEARS}y")
-        if rows:
-            cursor.executemany(INSERT_HIST, rows)
-            conn.commit()
-            logger.info(f"Historico BR {sym}: {len(rows)} candles salvos.")
-        else:
-            logger.error(f"Falha ao obter historico BR para {sym}.")
-        await asyncio.sleep(2)
-
-    conn.close()
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        logger.info(f"Iniciando download BR ({HISTORY_YEARS}Y): {BR_SYMBOLS}")
+        for sym in BR_SYMBOLS:
+            rows = _download_history_yfinance(sym, f"{HISTORY_YEARS}y")
+            if rows:
+                cursor.executemany(INSERT_HIST, rows)
+                conn.commit()
+                logger.info(f"Historico BR {sym}: {len(rows)} candles salvos.")
+            else:
+                logger.error(f"Falha ao obter historico BR para {sym}.")
+            await asyncio.sleep(2)
     logger.info("Download inicial do historico BR concluido.")
 
 
@@ -166,21 +150,17 @@ async def run_history_updater():
     await asyncio.sleep(30)
     while True:
         try:
-            conn = get_db()
-            cursor = conn.cursor()
-            now = datetime.utcnow()
-            logger.info(f"Atualizando histórico (loop {HISTORY_UPDATE_MINUTES}min)...")
-
-            for sym in US_SYMBOLS:
-                rows = _download_history_yfinance(sym, "5d")
-                if rows:
-                    cursor.executemany(INSERT_HIST, rows)
-                    conn.commit()
-                    logger.debug(f"Histórico {sym} atualizado: {len(rows)} candles.")
-                await asyncio.sleep(1)
-
-            conn.close()
-            logger.info(f"Atualização de histórico concluída. Próxima em {HISTORY_UPDATE_MINUTES}min.")
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                logger.info(f"Atualizando histórico (loop {HISTORY_UPDATE_MINUTES}min)...")
+                for sym in US_SYMBOLS:
+                    rows = _download_history_yfinance(sym, "5d")
+                    if rows:
+                        cursor.executemany(INSERT_HIST, rows)
+                        conn.commit()
+                        logger.debug(f"Histórico {sym} atualizado: {len(rows)} candles.")
+                    await asyncio.sleep(1)
+                logger.info(f"Atualização de histórico concluída. Próxima em {HISTORY_UPDATE_MINUTES}min.")
         except Exception as e:
             logger.error(f"Erro no history updater: {e}")
 
@@ -193,17 +173,16 @@ async def run_history_updater_br():
     await asyncio.sleep(60)
     while True:
         try:
-            conn = get_db()
-            cursor = conn.cursor()
-            logger.info("Atualizando historico BR...")
-            for sym in BR_SYMBOLS:
-                rows = _download_history_yfinance(sym, "5d")
-                if rows:
-                    cursor.executemany(INSERT_HIST, rows)
-                    conn.commit()
-                await asyncio.sleep(1)
-            conn.close()
-            logger.info(f"Historico BR atualizado. Proxima em {HISTORY_UPDATE_MINUTES}min.")
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                logger.info("Atualizando historico BR...")
+                for sym in BR_SYMBOLS:
+                    rows = _download_history_yfinance(sym, "5d")
+                    if rows:
+                        cursor.executemany(INSERT_HIST, rows)
+                        conn.commit()
+                    await asyncio.sleep(1)
+                logger.info(f"Historico BR atualizado. Proxima em {HISTORY_UPDATE_MINUTES}min.")
         except Exception as e:
             logger.error(f"Erro no BR history updater: {e}")
         await asyncio.sleep(HISTORY_UPDATE_MINUTES * 60)

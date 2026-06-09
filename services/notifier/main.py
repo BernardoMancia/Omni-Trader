@@ -1,13 +1,14 @@
 import os
 import asyncio
+from contextlib import asynccontextmanager
 import logging
 from datetime import date, datetime
 import httpx
-import psycopg2
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from pydantic import BaseModel
+from services.shared.db import get_conn, close_pool
 import uvicorn
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -25,16 +26,19 @@ TOPIC_BR = int(os.environ.get("TOPIC_BR", "0"))
 TG_URL = f"https://api.telegram.org/bot{TOKEN}"
 BR_TZ = pytz.timezone("America/Sao_Paulo")
 
-DB_PARAMS = {
-    "host": os.environ["DB_HOST"], "port": os.environ["DB_PORT"],
-    "dbname": os.environ["DB_NAME"], "user": os.environ["DB_USER"],
-    "password": os.environ["DB_PASSWORD"],
-}
 INITIAL_CAPITAL_US = float(os.environ.get("INITIAL_CAPITAL_US", "10000"))
 
 INITIAL_CAPITAL_BR = float(os.environ.get("INITIAL_CAPITAL_BR", "500"))
 
-app = FastAPI(title="Omni-Trader Notifier")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    close_pool()
+    logger.info("Notifier shutdown completo.")
+
+
+app = FastAPI(title="Omni-Trader Notifier", lifespan=lifespan)
 
 
 class NotifyRequest(BaseModel):
@@ -91,49 +95,43 @@ def get_exchange_rate() -> float:
 
 def get_performance_from_db() -> dict:
     try:
-        conn = psycopg2.connect(**DB_PARAMS)
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT SUM(CASE WHEN side='BUY' THEN -quantity*COALESCE(price,0)
-                            ELSE quantity*COALESCE(price,0) END)
-            FROM trade_logs
-            WHERE region='US' AND mode='REAL' AND is_deleted=FALSE AND time >= CURRENT_DATE
-            """,
-        )
-        row = cursor.fetchone()
-        pnl = float(row[0] or 0)
-
-        cursor.execute(
-            "SELECT capital_ref, max_drawdown FROM system_states WHERE region='US' ORDER BY time DESC LIMIT 1"
-        )
-        state_row = cursor.fetchone()
-        capital_ref = float(state_row[0]) if state_row else INITIAL_CAPITAL_US
-        max_dd = float(state_row[1]) if state_row else 0.0
-
-        cursor.execute(
-            """
-            SELECT (SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN -quantity*COALESCE(price,0)
-                                             ELSE quantity*COALESCE(price,0) END), 0)
-                    FROM trade_logs WHERE region='US' AND mode='REAL' AND is_deleted=FALSE)
-            """
-        )
-        total_row = cursor.fetchone()
-        total_pnl = float(total_row[0] or 0)
-        current_balance = capital_ref + total_pnl
-
-        cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE region='US' AND mode='REAL' AND is_deleted=FALSE AND time >= CURRENT_DATE")
-        trades_today = cursor.fetchone()[0]
-
-        conn.close()
-        return {
-            "pnl_day": pnl,
-            "capital_ref": capital_ref,
-            "current_balance": current_balance,
-            "max_drawdown": max_dd,
-            "trades_today": trades_today,
-        }
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT SUM(CASE WHEN side='BUY' THEN -quantity*COALESCE(price,0)
+                                ELSE quantity*COALESCE(price,0) END)
+                FROM trade_logs
+                WHERE region='US' AND mode='REAL' AND is_deleted=FALSE AND time >= CURRENT_DATE
+                """,
+            )
+            row = cursor.fetchone()
+            pnl = float(row[0] or 0)
+            cursor.execute(
+                "SELECT capital_ref, max_drawdown FROM system_states WHERE region='US' ORDER BY time DESC LIMIT 1"
+            )
+            state_row = cursor.fetchone()
+            capital_ref = float(state_row[0]) if state_row else INITIAL_CAPITAL_US
+            max_dd = float(state_row[1]) if state_row else 0.0
+            cursor.execute(
+                """
+                SELECT (SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN -quantity*COALESCE(price,0)
+                                                 ELSE quantity*COALESCE(price,0) END), 0)
+                        FROM trade_logs WHERE region='US' AND mode='REAL' AND is_deleted=FALSE)
+                """
+            )
+            total_row = cursor.fetchone()
+            total_pnl = float(total_row[0] or 0)
+            current_balance = capital_ref + total_pnl
+            cursor.execute("SELECT COUNT(*) FROM trade_logs WHERE region='US' AND mode='REAL' AND is_deleted=FALSE AND time >= CURRENT_DATE")
+            trades_today = cursor.fetchone()[0]
+            return {
+                "pnl_day": pnl,
+                "capital_ref": capital_ref,
+                "current_balance": current_balance,
+                "max_drawdown": max_dd,
+                "trades_today": trades_today,
+            }
     except Exception as e:
         logger.error(f"Erro ao buscar performance no DB: {e}")
         return {"pnl_day": 0.0, "capital_ref": INITIAL_CAPITAL_US, "current_balance": INITIAL_CAPITAL_US, "max_drawdown": 0.0, "trades_today": 0}
@@ -141,21 +139,20 @@ def get_performance_from_db() -> dict:
 
 def get_predictions_summary() -> str:
     try:
-        conn = psycopg2.connect(**DB_PARAMS)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT DISTINCT ON (symbol) symbol, direction, confidence, source "
-            "FROM predictions ORDER BY symbol, time DESC"
-        )
-        rows = cursor.fetchall()
-        conn.close()
-        if not rows:
-            return "Sem previsões disponíveis."
-        lines = []
-        for sym, direction, conf, source in rows:
-            emoji = "📈" if direction == "BUY" else "📉" if direction == "SELL" else "➡️"
-            lines.append(f"{emoji} {sym}: {direction} ({conf:.0%}) [{source}]")
-        return "\n".join(lines)
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT DISTINCT ON (symbol) symbol, direction, confidence, source "
+                "FROM predictions ORDER BY symbol, time DESC"
+            )
+            rows = cursor.fetchall()
+            if not rows:
+                return "Sem previsões disponíveis."
+            lines = []
+            for sym, direction, conf, source in rows:
+                emoji = "📈" if direction == "BUY" else "📉" if direction == "SELL" else "➡️"
+                lines.append(f"{emoji} {sym}: {direction} ({conf:.0%}) [{source}]")
+            return "\n".join(lines)
     except Exception:
         return "Erro ao buscar previsões."
 
@@ -284,7 +281,7 @@ async def main():
         f"🇺🇸 Capital US: ${INITIAL_CAPITAL_US:,.2f}\n"
         f"🇧🇷 Capital BR: R${INITIAL_CAPITAL_BR:,.2f}\n"
         f"📡 Streams: IBKR + Binance + YFinance\n"
-        f"🤖 IA: RandomForest + PPO + Sentimento\n"
+        f"🤖 IA: RandomForest + Sentimento\n"
         f"🛡️ Risco: 4 Estados (NORMAL→CAUTION→DEFENSIVE→RED)",
         TOPIC_LOGS,
     )

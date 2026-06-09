@@ -1,21 +1,15 @@
 import os
 import time
 import logging
-import psycopg2
 import httpx
 from datetime import datetime, timezone, timedelta
+from services.shared.db import get_conn
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("Watchdog")
 
 NOTIFIER_URL = os.environ.get("NOTIFIER_URL", "http://notifier:8001/notify")
 SILENCE_MINUTES = 10
-
-DB_PARAMS = {
-    "host": os.environ["DB_HOST"], "port": os.environ["DB_PORT"],
-    "dbname": os.environ["DB_NAME"], "user": os.environ["DB_USER"],
-    "password": os.environ["DB_PASSWORD"],
-}
 
 REGION_MAP = {"US": "IBKR (EUA)", "ASIA": "Binance (Cripto)", "BR": "B3 (Brasil)"}
 
@@ -32,19 +26,18 @@ def fire_alert(region: str):
 
 def check():
     try:
-        conn = psycopg2.connect(**DB_PARAMS)
-        cursor = conn.cursor()
-        cursor.execute("SELECT region, MAX(time) FROM market_data GROUP BY region;")
-        now = datetime.now(timezone.utc)
-        seen = set()
-        for region, last_seen in cursor.fetchall():
-            seen.add(region)
-            diff_min = (now - last_seen).total_seconds() / 60
-            if diff_min > SILENCE_MINUTES:
-                fire_alert(region)
-        for region in set(REGION_MAP.keys()) - seen:
-            logger.warning(f"Region {region} has no data yet.")
-        conn.close()
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT region, MAX(time) FROM market_data GROUP BY region;")
+            now = datetime.now(timezone.utc)
+            seen = set()
+            for region, last_seen in cursor.fetchall():
+                seen.add(region)
+                diff_min = (now - last_seen).total_seconds() / 60
+                if diff_min > SILENCE_MINUTES:
+                    fire_alert(region)
+            for region in set(REGION_MAP.keys()) - seen:
+                logger.warning(f"Region {region} has no data yet.")
     except Exception as exc:
         logger.error(f"DB check failed: {exc}")
 

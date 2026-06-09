@@ -1,28 +1,49 @@
 import os
 from typing import Literal
+from contextlib import asynccontextmanager
 import asyncio
 import logging
-import psycopg2
 import uvicorn
 import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from services.shared.risk import RiskManager, MarketState
+from services.shared.db import get_conn, close_pool
 from services.order_router.ibkr import IBKRRouter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("SmartOrderRouter")
 
-DB_PARAMS = {
-    "host": os.environ["DB_HOST"], "port": os.environ["DB_PORT"],
-    "dbname": os.environ["DB_NAME"], "user": os.environ["DB_USER"],
-    "password": os.environ["DB_PASSWORD"],
-}
 NOTIFIER_URL = os.environ.get("NOTIFIER_URL", "http://notifier:8001/notify")
 
-app = FastAPI(title="Omni-Trader Smart Order Router")
 ibkr_router: IBKRRouter | None = None
 risk_us: RiskManager | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global ibkr_router, risk_us
+    initial_capital = float(os.environ.get("INITIAL_CAPITAL_US", "10000"))
+    risk_pct = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
+    use_fractional = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
+    risk_us = RiskManager(
+        initial_capital=initial_capital,
+        region="US",
+        risk_pct=risk_pct,
+        use_fractional=use_fractional,
+    )
+    ibkr_router = IBKRRouter(risk_manager=risk_us)
+    await ibkr_router.connect()
+    logger.info(f"SOR v2.0 online | IBKR pronto | capital=${initial_capital:,.2f} | risco={risk_pct*100:.1f}%")
+    yield
+    # Shutdown
+    if ibkr_router and ibkr_router.ib.isConnected():
+        ibkr_router.ib.disconnect()
+    close_pool()
+    logger.info("SOR shutdown completo.")
+
+
+app = FastAPI(title="Omni-Trader Smart Order Router", lifespan=lifespan)
 
 
 class OrderRequest(BaseModel):
@@ -35,20 +56,15 @@ class OrderRequest(BaseModel):
 
 
 def _log_trade(symbol: str, side: str, quantity: float, mode: str, region: str, price: float = 0.0):
-    conn = None
     try:
-        conn = psycopg2.connect(**DB_PARAMS)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO trade_logs (symbol, side, quantity, price, mode, region) VALUES (%s, %s, %s, %s, %s, %s)",
-            (symbol, side, quantity, price, mode, region),
-        )
-        conn.commit()
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO trade_logs (symbol, side, quantity, price, mode, region) VALUES (%s, %s, %s, %s, %s, %s)",
+                (symbol, side, quantity, price, mode, region),
+            )
     except Exception as e:
         logger.error(f"Erro ao logar trade: {e}")
-    finally:
-        if conn:
-            conn.close()
 
 
 async def _notify(topic: str, text: str):
@@ -59,22 +75,6 @@ async def _notify(topic: str, text: str):
         pass
 
 
-@app.on_event("startup")
-async def startup_event():
-    global ibkr_router, risk_us
-    initial_capital = float(os.environ.get("INITIAL_CAPITAL_US", "10000"))
-    risk_pct = float(os.environ.get("RISK_PCT_PER_TRADE", "0.02"))
-    use_fractional = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
-
-    risk_us = RiskManager(
-        initial_capital=initial_capital,
-        region="US",
-        risk_pct=risk_pct,
-        use_fractional=use_fractional,
-    )
-    ibkr_router = IBKRRouter(risk_manager=risk_us)
-    await ibkr_router.connect()
-    logger.info(f"SOR v2.0 online | IBKR pronto | capital=${initial_capital:,.2f} | risco={risk_pct*100:.1f}%")
 
 
 @app.post("/order")
