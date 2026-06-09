@@ -2,7 +2,7 @@ import os
 import logging
 import time
 from contextlib import contextmanager
-from psycopg2.pool import SimpleConnectionPool
+from psycopg2.pool import ThreadedConnectionPool
 import psycopg2
 
 logger = logging.getLogger(__name__)
@@ -18,14 +18,14 @@ def _get_db_params() -> dict:
         "password": os.environ.get("DB_PASSWORD", ""),
     }
 
-def get_pool(minconn: int = 2, maxconn: int = 10) -> SimpleConnectionPool:
+def get_pool(minconn: int = 2, maxconn: int = 10) -> ThreadedConnectionPool:
     global _pool
     if _pool is None or _pool.closed:
         params = _get_db_params()
         backoff = 2
         for attempt in range(10):
             try:
-                _pool = SimpleConnectionPool(minconn, maxconn, **params)
+                _pool = ThreadedConnectionPool(minconn, maxconn, **params)
                 logger.info(f"DB pool criado ({minconn}-{maxconn} conns) -> {params['host']}:{params['port']}/{params['dbname']}")
                 return _pool
             except psycopg2.OperationalError as e:

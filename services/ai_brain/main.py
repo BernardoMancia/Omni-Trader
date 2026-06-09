@@ -255,8 +255,7 @@ class MarketEngine:
             try:
                 with get_conn() as conn:
                     cur = conn.cursor()
-                    sym_list = ",".join([f"'{s}'" for s in self.symbols])
-                    cur.execute(f"SELECT COUNT(*) FROM price_history WHERE symbol IN ({sym_list})")
+                    cur.execute("SELECT COUNT(*) FROM price_history WHERE symbol = ANY(%s)", (self.symbols,))
                     count = cur.fetchone()[0]
                 if count >= 100:
                     break
@@ -280,12 +279,12 @@ class MarketEngine:
                         db_data[sym] = df
                         logger.info(f"{self._tag} {sym}: {len(df)} registros do DB")
             if db_data:
-                self.forest.train(symbols=self.symbols, years=RF_TRAIN_YEARS, data_map=db_data)
+                await asyncio.to_thread(self.forest.train, symbols=self.symbols, years=RF_TRAIN_YEARS, data_map=db_data)
             else:
-                self.forest.train(symbols=self.symbols, years=RF_TRAIN_YEARS)
+                await asyncio.to_thread(self.forest.train, symbols=self.symbols, years=RF_TRAIN_YEARS)
         except Exception as e:
             logger.error(f"{self._tag} Falha no treino inicial: {e}")
-            self.forest.train(symbols=self.symbols, years=RF_TRAIN_YEARS)
+            await asyncio.to_thread(self.forest.train, symbols=self.symbols, years=RF_TRAIN_YEARS)
 
     async def run_loop(self):
         logger.info(f"{self._tag} Engine online | capital={self.currency}{self.capital:,.2f} | mode={TRADING_MODE}")
@@ -300,6 +299,7 @@ class MarketEngine:
         )
 
         while True:
+            conn = None
             try:
                 market_open = self.is_market_open()
                 local_time = self._local_time()
@@ -344,7 +344,7 @@ class MarketEngine:
                             df = pd.DataFrame(rows, columns=["Date", "Open", "High", "Low", "Close", "Volume"])
                             df.set_index("Date", inplace=True)
                             db_data[sym] = df
-                    self.forest.train(symbols=self.symbols, years=RF_TRAIN_YEARS, data_map=db_data)
+                    await asyncio.to_thread(self.forest.train, symbols=self.symbols, years=RF_TRAIN_YEARS, data_map=db_data)
                     self.last_retrain_day = now.date()
 
                 sentiment_score = self.sentiment.analyze(self.sentiment_query)
@@ -356,7 +356,6 @@ class MarketEngine:
                         f"Drawdown: {self.risk.get_drawdown():.2f}% | Shadow Mode"
                     )
                     await asyncio.sleep(SLEEP_OUTSIDE_MARKET)
-                    pool.putconn(conn)
                     continue
 
                 thoughts_batch = []
@@ -470,7 +469,7 @@ class MarketEngine:
                     else:
                         lines.append(f"\n\U0001f7e1 Nenhum trade neste ciclo")
 
-                    lines.append(f"\n\U0001f916 <i>Omni-Trader v4.0 {flag} {TRADING_MODE}</i>")
+                    lines.append(f"\n\U0001f916 <i>Omni-Trader v5.0 {flag} {TRADING_MODE}</i>")
 
                     await _notify_telegram(self.topic_thoughts, "\n".join(lines))
 
@@ -486,14 +485,14 @@ class MarketEngine:
                         )
                         await _notify_telegram(self.topic_invest, invest_msg)
 
-                pool.putconn(conn)
-
             except Exception as e:
                 logger.error(f"{self._tag} Loop error: {e}")
-                try:
-                    pool.putconn(conn)
-                except Exception:
-                    pass
+            finally:
+                if conn is not None:
+                    try:
+                        pool.putconn(conn)
+                    except Exception:
+                        pass
 
             await asyncio.sleep(LOOP_INTERVAL)
 
@@ -503,7 +502,7 @@ async def main():
     br_symbols = os.environ.get("BR_SYMBOLS", "").split(",")
     br_symbols = [s.strip() for s in br_symbols if s.strip()]
 
-    us_capital = float(os.environ.get("INITIAL_CAPITAL_US", "500"))
+    us_capital = float(os.environ.get("INITIAL_CAPITAL_US", "10000"))
     br_capital = float(os.environ.get("INITIAL_CAPITAL_BR", "500"))
 
     us_engine = MarketEngine(

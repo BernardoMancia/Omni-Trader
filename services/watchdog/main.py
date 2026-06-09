@@ -2,7 +2,7 @@ import os
 import time
 import logging
 import httpx
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from services.shared.db import get_conn
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")

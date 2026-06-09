@@ -137,7 +137,7 @@ class IBKRRouter:
 
             trade = self.ib.placeOrder(contract, order)
             logger.info(f"IBKR Ordem: {side} {quantity if not use_fractional else f'${stake:.2f}'} {symbol} (fee~${fee:.2f})")
-            return {"status": "submitted", "orderId": trade.order.orderId, "symbol": symbol}
+            return {"status": "submitted", "orderId": trade.order.orderId, "symbol": symbol, "quantity": quantity if not use_fractional else round(stake / mid_price, 6), "price": round(mid_price, 4)}
 
         except Exception as e:
             logger.error(f"Erro ao executar ordem IBKR {symbol}: {e}")

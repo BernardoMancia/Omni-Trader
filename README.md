@@ -11,7 +11,7 @@
 | Service | Role |
 |---|---|
 | `data_ingester` | Live ticks from IBKR + Binance WebSocket, OHLCV history via yfinance |
-| `ai_brain` | RandomForest (5yr history) + PPO + Sentiment analysis (VADER + NewsAPI) |
+| `ai_brain` | RandomForest (5yr history) + Sentiment analysis (VADER + NewsAPI) |
 | `order_router` | FastAPI SOR: validates fees, manages position sizing, executes IBKR orders |
 | `notifier` | Telegram alerts (entries, exits, trend changes) + reports at 10:00 & 20:00 |
 | `watchdog` | Dead-man switch: silence alert if no data for 10+ minutes |
@@ -21,13 +21,12 @@
 - **Proportional sizing**: position = `equity × risk_pct` (default 2%)
 - **Fee viability filter**: trade aborted if `estimated_profit < brokerage_fee × 4`
 - **Fractional shares**: set `USE_FRACTIONAL_SHARES=true` (for ETFs like VOO, QQQ)
-- **3 risk states**: `NORMAL → DEFENSIVE (sentiment < 0.4) → RED (drawdown > 50%)`
+- **3 risk states**: `NORMAL → DEFENSIVE (sentiment < 0.3) → RED (drawdown > 50%)`
 
 ### AI System
 
 - **RandomForest**: trained on 5 years OHLCV (RSI, MACD, Bollinger, EMA, ATR, Volume Ratio). Cached on disk.
-- **Sentiment**: VADER on NewsAPI headlines, 30min cache. Score < 0.4 → defensive mode (sell/hold only)
-- **PPO**: reinforcement learning agent (hold/buy/sell). Order sent only when RF + PPO agree.
+- **Sentiment**: VADER on NewsAPI headlines, 30min cache. Score < 0.3 → defensive mode (sell/hold only)
 
 ---
 
@@ -37,7 +36,7 @@
 
 ```bash
 # 1. In IB Gateway / TWS: Settings → API → Enable ActiveX and Socket Clients
-# Trusted IP: your VPS IP (82.112.245.99)
+# Trusted IP: your VPS IP (YOUR_VPS_IP)
 # Socket port: 24004
 # Read-only: NO
 # Account: U12345678 (your account ID)
@@ -102,7 +101,7 @@ docker compose logs -f brain
 | Serviço | Função |
 |---|---|
 | `data_ingester` | Ticks ao vivo IBKR + WebSocket Binance, histórico OHLCV via yfinance |
-| `ai_brain` | RandomForest (5 anos) + PPO + Análise de sentimento (VADER + NewsAPI) |
+| `ai_brain` | RandomForest (5 anos) + Análise de sentimento (VADER + NewsAPI) |
 | `order_router` | FastAPI SOR: valida taxas, dimensiona posição, executa ordens IBKR |
 | `notifier` | Alertas Telegram (entradas, saídas, tendências) + relatórios 10h e 20h |
 | `watchdog` | Dead-man switch: alerta se sem dados por 10+ minutos |
@@ -112,13 +111,12 @@ docker compose logs -f brain
 - **Dimensionamento proporcional**: posição = `equity × risk_pct` (padrão 2%)
 - **Filtro de taxa**: trade abortado se `lucro_estimado < taxa_corretagem × 4`
 - **Fractional Shares**: ative com `USE_FRACTIONAL_SHARES=true` (para ETFs caros como VOO, QQQ)
-- **3 estados de risco**: `NORMAL → DEFENSIVO (sentimento < 0.4) → RED (drawdown > 50%)`
+- **3 estados de risco**: `NORMAL → DEFENSIVO (sentimento < 0.3) → RED (drawdown > 50%)`
 
 ### Sistema de IA
 
 - **RandomForest**: treinado em 5 anos de OHLCV (RSI, MACD, Bollinger, EMA, ATR, Volume Ratio). Modelo salvo em disco.
-- **Sentimento**: VADER em manchetes da NewsAPI, cache de 30min. Score < 0.4 → modo defensivo (apenas venda/hold)
-- **PPO**: agente de reinforcement learning (hold/buy/sell). Ordem enviada somente quando RF + PPO concordam.
+- **Sentimento**: VADER em manchetes da NewsAPI, cache de 30min. Score < 0.3 → modo defensivo (apenas venda/hold)
 
 ---
 
@@ -128,7 +126,7 @@ docker compose logs -f brain
 
 ```bash
 # 1. No IB Gateway / TWS: Settings → API → Enable ActiveX and Socket Clients
-# IP confiável: IP da sua VPS (82.112.245.99)
+# IP confiável: IP da sua VPS (YOUR_VPS_IP)
 # Porta socket: 24004
 # Somente leitura: NÃO
 # Conta: U12345678 (seu ID de conta real)

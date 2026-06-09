@@ -5,9 +5,9 @@ import asyncio
 import logging
 import uvicorn
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from services.shared.risk import RiskManager, MarketState
+from services.shared.risk import RiskManager
 from services.shared.db import get_conn, close_pool
 from services.order_router.ibkr import IBKRRouter
 
@@ -101,7 +101,7 @@ async def place_order(order: OrderRequest):
             await asyncio.to_thread(_log_trade, order.symbol, order.side, order.quantity, "SHADOW", "US")
             await _notify("logs", f"👻 SHADOW: {order.side} {order.quantity} {order.symbol}")
         return result
-    return {"error": f"Região não suportada: {order.region}"}
+    raise HTTPException(status_code=400, detail=f"Região não suportada: {order.region}")
 
 
 @app.get("/health")
@@ -137,9 +137,9 @@ async def positions():
     if not ibkr_router or not ibkr_router.ib.isConnected():
         return {"positions": [], "error": "IBKR não conectado"}
     try:
-        positions = ibkr_router.ib.positions()
+        pos_list = ibkr_router.ib.positions()
         result = []
-        for pos in positions:
+        for pos in pos_list:
             result.append({
                 "symbol": pos.contract.symbol,
                 "quantity": pos.position,

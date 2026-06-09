@@ -2,7 +2,7 @@ import os
 import asyncio
 from contextlib import asynccontextmanager
 import logging
-from datetime import date, datetime
+from datetime import datetime
 import httpx
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler

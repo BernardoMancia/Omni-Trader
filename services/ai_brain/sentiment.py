@@ -19,7 +19,6 @@ except ImportError:
     _HTTPX_OK = False
 
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "")
-DEFENSIVE_THRESHOLD = float(os.environ.get("DEFENSIVE_THRESHOLD", "0.3"))
 CACHE_TTL_SECONDS = 1800
 
 
@@ -103,5 +102,3 @@ class SentimentEngine:
         logger.info(f"Sentimento calculado: {score:.4f} ({len(scores)} manchetes)")
         return score
 
-    def is_defensive(self, score: float) -> bool:
-        return score < DEFENSIVE_THRESHOLD

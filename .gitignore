@@ -12,3 +12,12 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Models
+*.pkl
+*.joblib
+
+# Environments
+venv/
+node_modules/
+.agents/

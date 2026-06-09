@@ -47,6 +47,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      ibgateway:
+        condition: service_started
     environment:
       SERVICE_NAME: data_ingester
       DB_HOST: db
@@ -64,9 +66,6 @@ services:
       CRYPTO_SYMBOLS: ${CRYPTO_SYMBOLS}
       RF_TRAIN_YEARS: ${RF_TRAIN_YEARS}
       TZ: America/Sao_Paulo
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
     mem_limit: 512m
 
   brain:
@@ -77,6 +76,10 @@ services:
     restart: always
     depends_on:
       db:
+        condition: service_healthy
+      router:
+        condition: service_healthy
+      notifier:
         condition: service_healthy
     environment:
       SERVICE_NAME: ai_brain
@@ -103,9 +106,7 @@ services:
       ROUTER_URL: http://router:28000/order
       TZ: America/Sao_Paulo
     volumes:
-      - rf_models:/tmp
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
+      - rf_models:/app/models
     mem_limit: 512m
 
   router:
@@ -117,6 +118,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      ibgateway:
+        condition: service_started
     environment:
       SERVICE_NAME: order_router
       DB_HOST: db
@@ -135,9 +138,6 @@ services:
       USE_FRACTIONAL_SHARES: ${USE_FRACTIONAL_SHARES}
       NOTIFIER_URL: http://notifier:8001/notify
       TZ: America/Sao_Paulo
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
     ports:
       - "28000:28000"
     healthcheck:
@@ -175,9 +175,6 @@ services:
       INITIAL_CAPITAL_US: ${INITIAL_CAPITAL_US}
       INITIAL_CAPITAL_BR: ${INITIAL_CAPITAL_BR:-500}
       TZ: America/Sao_Paulo
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
       interval: 30s
@@ -205,9 +202,6 @@ services:
       DB_NAME: ${DB_NAME}
       NOTIFIER_URL: http://notifier:8001/notify
       TZ: America/Sao_Paulo
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - /etc/timezone:/etc/timezone:ro
     mem_limit: 200m
 
 volumes:

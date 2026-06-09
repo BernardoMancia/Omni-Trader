@@ -4,9 +4,9 @@ import logging
 import json
 import time as _time_module
 from psycopg2.extras import execute_values
-from datetime import datetime
 from ib_insync import IB, Stock, util
 from services.shared.db import get_conn, get_pool
+from services.shared.utils import get_yf_session
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("DataIngester")
@@ -56,19 +56,10 @@ def _reconnect_db():
     return conn, cursor
 
 
-def _get_yf_session():
-    import requests
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    })
-    return session
-
-
 def _download_history_yfinance(sym: str, period: str = "5y"):
     try:
         import yfinance as yf
-        session = _get_yf_session()
+        session = get_yf_session()
         df = yf.download(sym, period=period, interval="1d", progress=False, auto_adjust=True, session=session)
         if df.empty:
             return []
