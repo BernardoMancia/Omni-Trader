@@ -8,10 +8,7 @@ from datetime import datetime, timezone, timedelta
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("Watchdog")
 
-TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID = os.environ["CHAT_ID"]
-TOPIC_LOGS = int(os.environ.get("TOPIC_LOGS", "0"))
-TG_URL = f"https://api.telegram.org/bot{TOKEN}"
+NOTIFIER_URL = os.environ.get("NOTIFIER_URL", "http://notifier:8001/notify")
 SILENCE_MINUTES = 10
 
 DB_PARAMS = {
@@ -27,11 +24,8 @@ def fire_alert(region: str):
         f"🚨 <b>DEAD MAN'S SWITCH — {REGION_MAP.get(region, region)}</b>\n"
         f"Sem dados há mais de {SILENCE_MINUTES} minutos. Verifique imediatamente!"
     )
-    payload = {"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}
-    if TOPIC_LOGS > 0:
-        payload["message_thread_id"] = TOPIC_LOGS
     try:
-        httpx.post(f"{TG_URL}/sendMessage", json=payload, timeout=10)
+        httpx.post(NOTIFIER_URL, json={"topic": "logs", "text": msg}, timeout=10.0)
         logger.error(f"ALERT FIRED: {region} silent")
     except Exception as exc:
         logger.critical(f"Failed to fire alert for {region}: {exc}")

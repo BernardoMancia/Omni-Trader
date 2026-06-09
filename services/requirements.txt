@@ -10,7 +10,6 @@ pytz==2024.1
 numpy==1.26.4
 pandas==2.2.2
 ib_insync==0.9.86
-torch==2.4.0+cpu
 scikit-learn==1.5.1
 yfinance==0.2.49
 requests>=2.31.0
@@ -19,5 +18,3 @@ ta==0.11.0
 vaderSentiment==3.3.2
 newsapi-python==0.2.7
 exchange-calendars==4.5.6
-
---extra-index-url https://download.pytorch.org/whl/cpu

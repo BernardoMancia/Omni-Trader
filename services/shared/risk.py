@@ -114,4 +114,6 @@ class RiskManager:
         return self.state in (MarketState.NORMAL, MarketState.CAUTION)
 
     def is_sell_allowed(self) -> bool:
-        return self.state in (MarketState.NORMAL, MarketState.CAUTION, MarketState.DEFENSIVE)
+        # Always allow sells — liquidation must never be blocked, even in RED state.
+        # Blocking sells during drawdowns traps positions and amplifies losses.
+        return True

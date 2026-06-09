@@ -2,7 +2,9 @@ import os
 import asyncio
 import logging
 import json
+import time as _time_module
 import psycopg2
+from psycopg2.extras import execute_values
 from datetime import datetime
 from ib_insync import IB, Stock, util
 
@@ -23,11 +25,13 @@ CRYPTO_SYMBOLS = os.environ.get("CRYPTO_SYMBOLS", "btcusdt,ethusdt,bnbusdt").spl
 HISTORY_YEARS = int(os.environ.get("RF_TRAIN_YEARS", "5"))
 HISTORY_UPDATE_MINUTES = 10
 INSERT_TICK = "INSERT INTO market_data (symbol, bid, ask, region) VALUES (%s, %s, %s, %s)"
+INSERT_TICK_BATCH = "INSERT INTO market_data (symbol, bid, ask, region) VALUES %s"
 INSERT_HIST = "INSERT INTO price_history (symbol, date, open, high, low, close, volume) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (symbol, date) DO UPDATE SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume"
+TICK_BATCH_SIZE = 100
+TICK_FLUSH_INTERVAL = 1.0  # seconds
 
 
 def get_db():
-    import time as _time
     while True:
         try:
             conn = psycopg2.connect(**DB_PARAMS)
@@ -35,7 +39,31 @@ def get_db():
             return conn
         except Exception as e:
             logger.error(f"DB connect falhou: {e}. Retry em 5s...")
-            _time.sleep(5)
+            _time_module.sleep(5)
+
+
+def _flush_ticks(cursor, conn, buffer: list) -> None:
+    """Batch-insert buffered ticks using execute_values and commit."""
+    if not buffer:
+        return
+    try:
+        execute_values(cursor, INSERT_TICK_BATCH, buffer)
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Flush falhou: {e}. Tentando reconectar...")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+
+
+def _reconnect_db():
+    """Re-establish DB connection and cursor after a failure."""
+    logger.info("Reconectando ao banco de dados...")
+    conn = get_db()
+    cursor = conn.cursor()
+    return conn, cursor
 
 
 def _get_yf_session():
@@ -188,6 +216,8 @@ async def run_binance_ingester():
     conn = get_db()
     cursor = conn.cursor()
     backoff = 5
+    tick_buffer: list[tuple] = []
+    last_flush = _time_module.monotonic()
 
     while True:
         try:
@@ -201,9 +231,29 @@ async def run_binance_ingester():
                     bid = float(data.get("b", 0))
                     ask = float(data.get("a", 0))
                     if sym and bid and ask:
-                        cursor.execute(INSERT_TICK, (sym, bid, ask, "ASIA"))
-                        conn.commit()
+                        tick_buffer.append((sym, bid, ask, "ASIA"))
+
+                    now = _time_module.monotonic()
+                    if len(tick_buffer) >= TICK_BATCH_SIZE or (tick_buffer and now - last_flush >= TICK_FLUSH_INTERVAL):
+                        try:
+                            _flush_ticks(cursor, conn, tick_buffer)
+                        except Exception:
+                            conn, cursor = _reconnect_db()
+                            _flush_ticks(cursor, conn, tick_buffer)
+                        tick_buffer.clear()
+                        last_flush = now
         except Exception as e:
+            # Flush remaining ticks before reconnecting
+            if tick_buffer:
+                try:
+                    _flush_ticks(cursor, conn, tick_buffer)
+                except Exception:
+                    try:
+                        conn, cursor = _reconnect_db()
+                        _flush_ticks(cursor, conn, tick_buffer)
+                    except Exception as flush_err:
+                        logger.error(f"Perda de {len(tick_buffer)} ticks no flush de emergência: {flush_err}")
+                tick_buffer.clear()
             logger.warning(f"Binance WS encerrada ({e}). Reconnect em {backoff}s...")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
@@ -214,6 +264,7 @@ async def run_ibkr_ingester():
     ib = IB()
     conn = get_db()
     cursor = conn.cursor()
+    tick_buffer: list[tuple] = []
 
     while True:
         try:
@@ -231,37 +282,56 @@ async def run_ibkr_ingester():
     ib.reqMarketDataType(3)
 
     def on_tick(ticker):
+        nonlocal conn, cursor
         if ticker.bid and ticker.ask:
-            cursor.execute(INSERT_TICK, (ticker.contract.symbol, ticker.bid, ticker.ask, "US"))
-            conn.commit()
+            tick_buffer.append((ticker.contract.symbol, ticker.bid, ticker.ask, "US"))
 
     for contract in contracts:
         ib.reqMktData(contract, "", False, False)
     ib.pendingTickersEvent += lambda tickers: [on_tick(t) for t in tickers]
 
+    last_flush = _time_module.monotonic()
     while ib.isConnected():
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
+        now = _time_module.monotonic()
+        if len(tick_buffer) >= TICK_BATCH_SIZE or (tick_buffer and now - last_flush >= TICK_FLUSH_INTERVAL):
+            try:
+                _flush_ticks(cursor, conn, tick_buffer)
+            except Exception:
+                conn, cursor = _reconnect_db()
+                try:
+                    _flush_ticks(cursor, conn, tick_buffer)
+                except Exception as flush_err:
+                    logger.error(f"IBKR perda de {len(tick_buffer)} ticks: {flush_err}")
+            tick_buffer.clear()
+            last_flush = now
 
-    logger.error("IBKR ingester desconectado. Reiniciando...")
-    raise ConnectionError("IBKR disconnected")
+    logger.error("IBKR ingester desconectado. Retornando para reinício pelo supervisor.")
+    return
+
+
+async def _supervised(coro_fn, name: str):
+    """Supervisor that restarts a coroutine on crash with a 10s backoff."""
+    while True:
+        try:
+            await coro_fn()
+        except Exception as e:
+            logger.error(f"[{name}] crash: {e}. Reiniciando em 10s...")
+            await asyncio.sleep(10)
 
 
 async def main():
     await run_history_fetcher()
     await run_history_fetcher_br()
-    while True:
-        try:
-            tasks = [
-                run_binance_ingester(),
-                run_ibkr_ingester(),
-                run_history_updater(),
-            ]
-            if BR_SYMBOLS:
-                tasks.append(run_history_updater_br())
-            await asyncio.gather(*tasks)
-        except Exception as e:
-            logger.error(f"Ingester crash: {e}. Reiniciando em 10s...")
-            await asyncio.sleep(10)
+
+    tasks = [
+        _supervised(run_binance_ingester, "Binance"),
+        _supervised(run_ibkr_ingester, "IBKR"),
+        _supervised(run_history_updater, "HistoryUpdater"),
+    ]
+    if BR_SYMBOLS:
+        tasks.append(_supervised(run_history_updater_br, "HistoryUpdaterBR"))
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

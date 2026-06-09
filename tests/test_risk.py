@@ -1,7 +1,3 @@
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 from services.shared.risk import RiskManager, MarketState
 
 
@@ -63,13 +59,3 @@ def test_risk_recalibration():
     assert rm.capital_ref == 400.0
     assert rm.max_drawdown == 0.0
 
-
-if __name__ == "__main__":
-    test_proportional_position_size()
-    test_fractional_shares()
-    test_fee_viability()
-    test_defensive_mode()
-    test_risk_red_mode()
-    test_max_drawdown_tracking()
-    test_risk_recalibration()
-    print("✅ Todos os testes passaram.")

@@ -3,15 +3,13 @@ import asyncio
 import logging
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
 import psycopg2
 import httpx
 import pytz
 from datetime import datetime, timezone
 from services.ai_brain.forest import ForestEngine
 from services.ai_brain.sentiment import SentimentEngine
-from services.shared.risk import MarketState
+from services.shared.risk import RiskManager, MarketState
 
 try:
     import exchange_calendars as xcals
@@ -30,43 +28,13 @@ DB_PARAMS = {
 ROUTER_URL = os.environ.get("ROUTER_URL", "http://router:28000/order")
 NOTIFIER_URL = os.environ.get("NOTIFIER_URL", "http://notifier:8001/notify")
 LOOP_INTERVAL = int(os.environ.get("BRAIN_LOOP_INTERVAL", "15"))
-PPO_CONFIDENCE_MIN = float(os.environ.get("PPO_CONFIDENCE_MIN", "0.70"))
 SLEEP_OUTSIDE_MARKET = int(os.environ.get("SLEEP_OUTSIDE_MARKET", "300"))
 DEFENSIVE_THRESHOLD = float(os.environ.get("DEFENSIVE_THRESHOLD", "0.3"))
 RF_TRAIN_YEARS = int(os.environ.get("RF_TRAIN_YEARS", "5"))
 TRADING_MODE = os.environ.get("IB_TRADING_MODE", "paper").upper()
 
 
-class PPOActorCritic(nn.Module):
-    def __init__(self, state_dim: int, action_dim: int):
-        super().__init__()
-        self.shared = nn.Sequential(
-            nn.Linear(state_dim, 256), nn.ReLU(),
-            nn.Linear(256, 128), nn.ReLU(),
-        )
-        self.actor = nn.Sequential(nn.Linear(128, action_dim), nn.Softmax(dim=-1))
-        self.critic = nn.Linear(128, 1)
 
-    def forward(self, x: torch.Tensor):
-        features = self.shared(x)
-        return self.actor(features), self.critic(features)
-
-
-class PPOAgent:
-    ACTIONS = ["HOLD", "BUY", "SELL"]
-
-    def __init__(self, state_dim: int = 9, action_dim: int = 3):
-        self.device = torch.device("cpu")
-        self.model = PPOActorCritic(state_dim, action_dim).to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=3e-4)
-
-    def get_action(self, state_vector: np.ndarray) -> dict:
-        state_tensor = torch.FloatTensor(state_vector).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            probs, _ = self.model(state_tensor)
-        action_idx = int(torch.argmax(probs).item())
-        confidence = float(probs[0][action_idx].item())
-        return {"action": self.ACTIONS[action_idx], "confidence": round(confidence, 4)}
 
 
 def _fetch_latest_features(cursor, symbol: str) -> np.ndarray | None:
@@ -136,11 +104,7 @@ async def _send_order(symbol: str, side: str, quantity: float, use_fractional: b
             logger.error(f"Falha ao enviar ordem ao router: {e}")
 
 
-def _compute_score(rf_decision: dict, ppo_decision: dict, sentiment_score: float) -> float:
-    rf_conf = rf_decision["confidence"]
-    ppo_conf = ppo_decision["confidence"]
-    consensus_bonus = 0.15 if rf_decision["signal"] == ppo_decision["action"] else 0.0
-    return (rf_conf * 0.7) + (ppo_conf * 0.2) + consensus_bonus + (sentiment_score * 0.1)
+
 
 
 class MarketEngine:
@@ -163,7 +127,6 @@ class MarketEngine:
         use_frac = os.environ.get("USE_FRACTIONAL_SHARES", "false").lower() == "true"
         self.risk = RiskManager(initial_capital=capital, region=region, risk_pct=risk_pct, use_fractional=use_frac)
         self.forest = ForestEngine(model_prefix=region.lower())
-        self.ppo = PPOAgent(state_dim=9)
         self.sentiment = SentimentEngine()
 
         self.calendar = None
@@ -189,7 +152,7 @@ class MarketEngine:
     def _br_time(self) -> datetime:
         return datetime.now(pytz.timezone("America/Sao_Paulo"))
 
-    def _build_thought(self, symbol, features, sentiment_score, rf, ppo, final_action, score):
+    def _build_thought(self, symbol, features, sentiment_score, rf, final_action):
         if features is None:
             return f"\u26a0\ufe0f <code>{symbol:>8}</code> \u2502 Dados insuficientes"
         rsi = features[0]
@@ -201,24 +164,23 @@ class MarketEngine:
         trend = "\u25b2" if ema_20 > ema_50 else "\u25bc"
         macd_dir = "+" if macd_val > 0 else "-"
         rf_s = rf["signal"][0]
-        ppo_s = ppo["action"][0]
         return (
             f"{fa_em} <code>{symbol:>8}</code> \u2502 "
             f"RSI <code>{rsi:5.1f}</code> \u2502 "
             f"MACD {macd_dir} \u2502 {trend} \u2502 "
             f"RF:{rf_s} <code>{rf['confidence']:.0%}</code> \u2502 "
-            f"PPO:{ppo_s} <code>{ppo['confidence']:.0%}</code> \u2502 "
+            f"Sent <code>{sentiment_score:.2f}</code> \u2502 "
             f"<b>{fa_clean}</b>"
         )
 
-    def _save_thought(self, cursor, conn, symbol, thought, features, sentiment, rf, ppo, final_action):
+    def _save_thought(self, cursor, conn, symbol, thought, features, sentiment, rf, final_action):
         try:
             rsi = float(features[0]) if features is not None else None
             macd = float(features[1]) if features is not None else None
             cursor.execute(
                 "INSERT INTO ai_thoughts (symbol, thought, rsi, macd, sentiment, rf_signal, rf_conf, ppo_action, ppo_conf, final_action, region) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (symbol, thought, rsi, macd, sentiment, rf["signal"], rf["confidence"], ppo["action"], ppo["confidence"], final_action, self.region)
+                (symbol, thought, rsi, macd, sentiment, rf["signal"], rf["confidence"], None, None, final_action, self.region)
             )
             conn.commit()
         except Exception:
@@ -411,12 +373,9 @@ class MarketEngine:
                         continue
 
                     rf_decision = self.forest.predict(features)
-                    ppo_decision = self.ppo.get_action(features)
 
                     self._save_prediction(cursor, conn, symbol, rf_decision["signal"], rf_decision["confidence"], "forest")
-                    self._save_prediction(cursor, conn, symbol, ppo_decision["action"], ppo_decision["confidence"], "ppo")
 
-                    score = _compute_score(rf_decision, ppo_decision, sentiment_score)
                     desired_action = rf_decision["signal"]
                     final_action = "HOLD"
 
@@ -426,8 +385,8 @@ class MarketEngine:
                         position = self._get_position(cursor, symbol)
                         if position <= 0:
                             final_action = "HOLD (sem pos)"
-                            thought = self._build_thought(symbol, features, sentiment_score, rf_decision, ppo_decision, final_action, score)
-                            self._save_thought(cursor, conn, symbol, thought, features, sentiment_score, rf_decision, ppo_decision, final_action)
+                            thought = self._build_thought(symbol, features, sentiment_score, rf_decision, final_action)
+                            self._save_thought(cursor, conn, symbol, thought, features, sentiment_score, rf_decision, final_action)
                             thoughts_batch.append(thought)
                             self._log_sentiment(cursor, conn, symbol, sentiment_score)
                             continue
@@ -460,14 +419,14 @@ class MarketEngine:
 
                                 executed_trades.append({
                                     "symbol": symbol, "action": final_action,
-                                    "quantity": quantity, "price": mid_price, "score": score,
+                                    "quantity": quantity, "price": mid_price,
                                 })
                                 final_action = f"\u2705 {final_action}"
                             else:
                                 final_action = "HOLD (qty=0)"
 
-                    thought = self._build_thought(symbol, features, sentiment_score, rf_decision, ppo_decision, final_action, score)
-                    self._save_thought(cursor, conn, symbol, thought, features, sentiment_score, rf_decision, ppo_decision, final_action)
+                    thought = self._build_thought(symbol, features, sentiment_score, rf_decision, final_action)
+                    self._save_thought(cursor, conn, symbol, thought, features, sentiment_score, rf_decision, final_action)
                     thoughts_batch.append(thought)
                     self._log_sentiment(cursor, conn, symbol, sentiment_score)
 
@@ -499,7 +458,7 @@ class MarketEngine:
                         f"\U0001f4b0 {self.currency}{self.capital:,.2f} \u2502 {risk_tag} {self.risk.state.name} \u2502 DD: {dd:+.1f}%",
                         f"\U0001f30d Sent: <b>{sentiment_score:.2f}</b> {sent_tag} \u2502 \U0001f4cb {len(thoughts_batch)} ativos",
                         sep_thick,
-                        f"\U0001f4dd    ATIVO   \u2502  RSI  \u2502MACD\u2502\u25b2\u25bc\u2502  RF  \u2502  PPO \u2502 ACAO",
+                        f"\U0001f4dd    ATIVO   \u2502  RSI  \u2502MACD\u2502\u25b2\u25bc\u2502  RF  \u2502 Sent \u2502 ACAO",
                         sep_thin,
                     ]
                     for t in thoughts_batch:
@@ -526,7 +485,6 @@ class MarketEngine:
                             f"{_signal_emoji(et['action'])} <b>{et['action']} {et['symbol']}</b>\n"
                             f"\U0001f4b5 Qty: <code>{et['quantity']:.4f}</code>\n"
                             f"\U0001f4b2 Preco: <code>{self.currency}{et['price']:.2f}</code>\n"
-                            f"\U0001f3af Score: <code>{et['score']:.3f}</code>\n"
                             f"\U0001f30d Sent: <code>{sentiment_score:.2f}</code>\n"
                             f"\U0001f4bc Capital: <code>{self.currency}{self.capital:,.2f}</code>\n"
                             f"\U0001f552 {br_str}"

@@ -114,8 +114,15 @@ class ForestEngine:
         X = data[self.FEATURE_COLS].values
         y = data["target"].values
 
+        # Temporal train/test split (80/20) — no shuffle to preserve time order
+        split_idx = int(len(X) * 0.8)
+        X_train, X_val = X[:split_idx], X[split_idx:]
+        y_train, y_val = y[:split_idx], y[split_idx:]
+
         self.scaler = StandardScaler()
-        X_scaled = self.scaler.fit_transform(X)
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_val_scaled = self.scaler.transform(X_val)
+
         self.model = RandomForestClassifier(
             n_estimators=200,
             max_depth=10,
@@ -124,16 +131,21 @@ class ForestEngine:
             class_weight="balanced",
             random_state=42,
         )
-        self.model.fit(X_scaled, y)
+        self.model.fit(X_train_scaled, y_train)
 
-        train_acc = self.model.score(X_scaled, y)
+        train_acc = self.model.score(X_train_scaled, y_train)
+        val_acc = self.model.score(X_val_scaled, y_val)
         importances = self.model.feature_importances_
         top_idx = np.argsort(importances)[-3:][::-1]
         top_feats = ", ".join([f"{self.FEATURE_COLS[i]}={importances[i]:.3f}" for i in top_idx])
 
         joblib.dump(self.model, self._model_path)
         joblib.dump(self.scaler, self._scaler_path)
-        logger.info(f"RF [{self._prefix.upper()}] treinado: {len(data)} amostras | acc={train_acc:.2%} | top: {top_feats}")
+        logger.info(
+            f"RF [{self._prefix.upper()}] treinado: {len(data)} amostras "
+            f"(train={split_idx}, val={len(data)-split_idx}) | "
+            f"train_acc={train_acc:.2%} | val_acc={val_acc:.2%} | top: {top_feats}"
+        )
         return True
 
     def predict(self, feature_vector: np.ndarray) -> dict:

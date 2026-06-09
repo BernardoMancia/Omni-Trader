@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.py[cod]
+.env
+.env.example
+.git/
+.gitignore
+docs/
+tests/
+*.pkl
+*.joblib
+*.md
+*.log
+.agents/
+.pytest_cache/
+htmlcov/
+.coverage

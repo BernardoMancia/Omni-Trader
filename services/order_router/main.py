@@ -1,11 +1,12 @@
 import os
+from typing import Literal
 import asyncio
 import logging
 import psycopg2
 import uvicorn
 import httpx
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from services.shared.risk import RiskManager, MarketState
 from services.order_router.ibkr import IBKRRouter
 
@@ -26,14 +27,15 @@ risk_us: RiskManager | None = None
 
 class OrderRequest(BaseModel):
     symbol: str
-    side: str
-    quantity: float = 1.0
-    region: str = "US"
+    side: Literal["BUY", "SELL"]
+    quantity: float = Field(default=1.0, gt=0)
+    region: Literal["US", "BR", "CRYPTO"] = "US"
     use_fractional: bool = False
     equity: float | None = None
 
 
 def _log_trade(symbol: str, side: str, quantity: float, mode: str, region: str, price: float = 0.0):
+    conn = None
     try:
         conn = psycopg2.connect(**DB_PARAMS)
         cursor = conn.cursor()
@@ -42,9 +44,11 @@ def _log_trade(symbol: str, side: str, quantity: float, mode: str, region: str, 
             (symbol, side, quantity, price, mode, region),
         )
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.error(f"Erro ao logar trade: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 
 async def _notify(topic: str, text: str):
@@ -84,15 +88,17 @@ async def place_order(order: OrderRequest):
             equity=order.equity,
         )
         if result.get("status") == "submitted":
-            _log_trade(order.symbol, order.side, order.quantity, "REAL", "US")
+            exec_qty = result.get("quantity", order.quantity)
+            exec_price = result.get("price", 0)
+            await asyncio.to_thread(_log_trade, order.symbol, order.side, exec_qty, "REAL", "US", exec_price)
             await _notify(
                 "invest",
                 f"📊 <b>Ordem Executada</b>\n"
-                f"{'🟢 COMPRA' if order.side == 'BUY' else '🔴 VENDA'} {order.quantity} {order.symbol}\n"
+                f"{'🟢 COMPRA' if order.side == 'BUY' else '🔴 VENDA'} {exec_qty} {order.symbol}\n"
                 f"Estado: {risk_us.state.name}"
             )
         elif result.get("mode") == "SHADOW":
-            _log_trade(order.symbol, order.side, order.quantity, "SHADOW", "US")
+            await asyncio.to_thread(_log_trade, order.symbol, order.side, order.quantity, "SHADOW", "US")
             await _notify("logs", f"👻 SHADOW: {order.side} {order.quantity} {order.symbol}")
         return result
     return {"error": f"Região não suportada: {order.region}"}
